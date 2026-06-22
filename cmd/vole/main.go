@@ -21,12 +21,12 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/kovrov/vole/internal/audio"
-	"github.com/kovrov/vole/internal/config"
-	"github.com/kovrov/vole/internal/daemon"
-	"github.com/kovrov/vole/internal/models"
-	"github.com/kovrov/vole/internal/overlay"
-	"github.com/kovrov/vole/internal/whisper"
+	"github.com/almaz-uno/vole/internal/audio"
+	"github.com/almaz-uno/vole/internal/config"
+	"github.com/almaz-uno/vole/internal/daemon"
+	"github.com/almaz-uno/vole/internal/models"
+	"github.com/almaz-uno/vole/internal/overlay"
+	"github.com/almaz-uno/vole/internal/whisper"
 )
 
 // version is set at build time via -ldflags "-X main.version=...".

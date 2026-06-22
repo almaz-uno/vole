@@ -13,14 +13,14 @@ import (
 	"sync"
 	"time"
 
-	"github.com/kovrov/vole/internal/audio"
-	"github.com/kovrov/vole/internal/config"
-	"github.com/kovrov/vole/internal/hotkey"
-	"github.com/kovrov/vole/internal/inject"
-	"github.com/kovrov/vole/internal/models"
-	"github.com/kovrov/vole/internal/overlay"
-	"github.com/kovrov/vole/internal/tray"
-	"github.com/kovrov/vole/internal/whisper"
+	"github.com/almaz-uno/vole/internal/audio"
+	"github.com/almaz-uno/vole/internal/config"
+	"github.com/almaz-uno/vole/internal/hotkey"
+	"github.com/almaz-uno/vole/internal/inject"
+	"github.com/almaz-uno/vole/internal/models"
+	"github.com/almaz-uno/vole/internal/overlay"
+	"github.com/almaz-uno/vole/internal/tray"
+	"github.com/almaz-uno/vole/internal/whisper"
 )
 
 const threads = 8 // CPU threads for the non-GPU parts (mel, sampling)

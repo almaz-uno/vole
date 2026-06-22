@@ -1,4 +1,4 @@
-module github.com/kovrov/vole
+module github.com/almaz-uno/vole
 
 go 1.25.0
 

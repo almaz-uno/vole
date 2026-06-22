@@ -29,11 +29,16 @@ import (
 	"github.com/kovrov/vole/internal/whisper"
 )
 
+// version is set at build time via -ldflags "-X main.version=...".
+var version = "dev"
+
 func main() {
 	if len(os.Args) < 2 {
 		usage()
 	}
 	switch os.Args[1] {
+	case "version", "-v", "--version":
+		fmt.Println("vole", version)
 	case "daemon":
 		if err := daemon.Run(); err != nil {
 			fatal(err)

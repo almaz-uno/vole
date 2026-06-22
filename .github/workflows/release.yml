@@ -1,0 +1,86 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            goos: linux
+            goarch: amd64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake patchelf \
+            glslc glslang-tools spirv-headers spirv-tools libvulkan-dev
+
+      - name: Build whisper.cpp (Vulkan)
+        env:
+          PREFIX: ${{ github.workspace }}/whisper-prefix
+        run: |
+          git clone --depth=1 https://github.com/ggerganov/whisper.cpp
+          git clone --depth=1 https://github.com/KhronosGroup/Vulkan-Headers
+          cmake -S whisper.cpp -B whisper.cpp/build \
+            -DGGML_VULKAN=1 -DCMAKE_BUILD_TYPE=Release \
+            -DVulkan_INCLUDE_DIR="$PWD/Vulkan-Headers/include"
+          cmake --build whisper.cpp/build -j"$(nproc)"
+          cmake --install whisper.cpp/build --prefix "$PREFIX"
+          # the generated whisper.pc misses the split ggml backends — rewrite it
+          cat > "$PREFIX/lib/pkgconfig/whisper.pc" <<EOF
+          prefix=$PREFIX
+          libdir=\${prefix}/lib
+          includedir=\${prefix}/include
+
+          Name: whisper
+          Description: Port of OpenAI's Whisper model in C/C++
+          Version: 1.9.0
+          Libs: -L\${libdir} -lwhisper -lggml -lggml-base -lggml-cpu -lggml-vulkan
+          Cflags: -I\${includedir}
+          EOF
+
+      - name: Build vole
+        env:
+          PREFIX: ${{ github.workspace }}/whisper-prefix
+        run: |
+          export PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig"
+          CGO_ENABLED=1 go build -trimpath \
+            -ldflags "-X main.version=${GITHUB_REF_NAME}" \
+            -o vole ./cmd/vole
+
+      - name: Package
+        env:
+          PREFIX: ${{ github.workspace }}/whisper-prefix
+        run: |
+          name="vole-${GITHUB_REF_NAME}-${{ matrix.goos }}-${{ matrix.goarch }}"
+          mkdir -p "dist/$name/lib"
+          cp vole "dist/$name/"
+          cp README.md config.yaml.example "dist/$name/"
+          [ -f LICENSE ] && cp LICENSE "dist/$name/" || true
+          # bundle whisper/ggml shared libs; resolve them next to the binary
+          cp -a "$PREFIX"/lib/libwhisper.so* "$PREFIX"/lib/libggml*.so* "dist/$name/lib/"
+          patchelf --force-rpath --set-rpath '$ORIGIN/lib' "dist/$name/vole"
+          tar -C dist -czf "$name.tar.gz" "$name"
+
+      - name: Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: vole-*.tar.gz
+          generate_release_notes: true

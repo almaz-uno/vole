@@ -1,0 +1,20 @@
+# vole configuration. Copy to ~/.config/vole/config.yaml and edit to taste.
+# Any field may be omitted — defaults are used for missing ones.
+
+# PTT hotkey: hold to record, release to transcribe and inject.
+# While the key is held, Shift switches the language on the fly (lang <-> lang_shift).
+hotkey:
+  mods: Super+Control   # modifiers: Super, Control, Alt, Shift (joined with +)
+  key: d                # key (a Latin letter/digit, or space/pause/menu)
+  lang: ru              # language without Shift
+  lang_shift: en        # language while Shift is held
+
+# Silence threshold (peak RMS): recordings below it count as empty and are skipped.
+silence_threshold: 0.005
+
+# Model paths (~ is supported). Defaults to the whisper.cpp build directory.
+model: ~/.local/share/dictation/whisper.cpp/models/ggml-large-v3.bin
+vad: ~/.local/share/dictation/whisper.cpp/models/ggml-silero-v5.1.2.bin
+
+# Daemon unix socket (defaults to $XDG_RUNTIME_DIR/vole.sock).
+# socket: /run/user/1000/vole.sock

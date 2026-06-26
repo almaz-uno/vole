@@ -27,13 +27,23 @@ const (
 	idDictate    = "dictate"     // base language
 	idDictateAlt = "dictate-alt" // alternate (Shift) language
 
-	portalTimeout = 30 * time.Second
+	// createTimeout bounds the non-interactive CreateSession handshake.
+	createTimeout = 30 * time.Second
+	// bindTimeout is 0 (no deadline): BindShortcuts is interactive on KDE — the
+	// compositor shows a consent dialog and only answers once the user acts — so
+	// we wait indefinitely (until Close) rather than abandoning the request.
+	bindTimeout = 0
 )
 
 // HotkeyConfig describes the two PTT shortcuts to register.
 type HotkeyConfig struct {
 	LangBase  string // language for the "dictate" shortcut
 	LangShift string // language for the "dictate-alt" shortcut (empty: single shortcut)
+	// Mods/Key seed the suggested trigger sent to the portal: "dictate" gets
+	// Mods+Key and "dictate-alt" gets Mods+Shift+Key. The compositor may pre-fill
+	// these in its bind UI; the user can still override them. Empty: no suggestion.
+	Mods string // e.g. "Super"
+	Key  string // e.g. "k"
 }
 
 // Hotkey is a push-to-talk source backed by the GlobalShortcuts portal.
@@ -84,7 +94,7 @@ func NewHotkey(cfg HotkeyConfig) (*Hotkey, error) {
 	obj := conn.Object(portalBus, portalPath)
 
 	// 1. CreateSession — the session handle arrives via the request Response.
-	res, err := h.request(obj, gsIface+".CreateSession", func(opts map[string]dbus.Variant) {
+	res, err := h.request(obj, gsIface+".CreateSession", createTimeout, func(opts map[string]dbus.Variant) {
 		opts["session_handle_token"] = dbus.MakeVariant(newToken("session"))
 	})
 	if err != nil {
@@ -100,21 +110,24 @@ func NewHotkey(cfg HotkeyConfig) (*Hotkey, error) {
 	// 2. BindShortcuts — the user binds the keys in the compositor settings.
 	shortcuts := []portalShortcut{{
 		ID:    idDictate,
-		Props: shortcutProps("vole: dictate (" + nonEmpty(cfg.LangBase, "default") + ")"),
+		Props: shortcutProps("vole: dictate ("+nonEmpty(cfg.LangBase, "default")+")", portalTrigger(cfg.Mods, cfg.Key, false)),
 	}}
 	if cfg.LangShift != "" && cfg.LangShift != cfg.LangBase {
 		shortcuts = append(shortcuts, portalShortcut{
 			ID:    idDictateAlt,
-			Props: shortcutProps("vole: dictate (" + cfg.LangShift + ")"),
+			Props: shortcutProps("vole: dictate ("+cfg.LangShift+")", portalTrigger(cfg.Mods, cfg.Key, true)),
 		})
 	}
-	if _, err := h.request(obj, gsIface+".BindShortcuts", nil, h.session, shortcuts, ""); err != nil {
+	// On KDE the first BindShortcuts pops a consent dialog; we wait for it.
+	fmt.Fprintln(os.Stderr, "[vole] wayland hotkey: registering shortcuts via the "+
+		"GlobalShortcuts portal — confirm the dialog on screen if it appears…")
+	if _, err := h.request(obj, gsIface+".BindShortcuts", bindTimeout, nil, h.session, shortcuts, ""); err != nil {
 		h.Close()
 		return nil, fmt.Errorf("wayland hotkey: BindShortcuts: %w", err)
 	}
 
 	fmt.Fprintf(os.Stderr, "[vole] wayland hotkey: bound %q/%q via GlobalShortcuts portal "+
-		"(bind keys in System Settings → Shortcuts)\n", idDictate, idDictateAlt)
+		"(assign keys in System Settings → Shortcuts)\n", idDictate, idDictateAlt)
 	return h, nil
 }
 
@@ -162,9 +175,10 @@ func (h *Hotkey) langFor(id string) string {
 }
 
 // request invokes a portal method that returns a request handle and blocks for
-// its Response signal. fillOpts may add extra options; handle_token is always
-// set. extraArgs precede the trailing options dict in the call.
-func (h *Hotkey) request(obj dbus.BusObject, method string,
+// its Response signal. timeout <= 0 waits indefinitely (until Close). fillOpts
+// may add extra options; handle_token is always set. extraArgs precede the
+// trailing options dict in the call.
+func (h *Hotkey) request(obj dbus.BusObject, method string, timeout time.Duration,
 	fillOpts func(map[string]dbus.Variant), extraArgs ...any,
 ) (map[string]dbus.Variant, error) {
 	token := newToken("req")
@@ -188,19 +202,24 @@ func (h *Hotkey) request(obj dbus.BusObject, method string,
 	if err := obj.Call(method, 0, args...).Store(&handle); err != nil {
 		return nil, err
 	}
-	return h.waitResponse(reqPath)
+	return h.waitResponse(reqPath, timeout)
 }
 
-// waitResponse blocks for the Response signal at reqPath, honoring the timeout.
-func (h *Hotkey) waitResponse(reqPath dbus.ObjectPath) (map[string]dbus.Variant, error) {
-	deadline := time.NewTimer(portalTimeout)
-	defer deadline.Stop()
+// waitResponse blocks for the Response signal at reqPath. timeout <= 0 waits
+// without a deadline (until Close), as required for interactive requests.
+func (h *Hotkey) waitResponse(reqPath dbus.ObjectPath, timeout time.Duration) (map[string]dbus.Variant, error) {
+	var deadline <-chan time.Time // nil channel: never fires when timeout <= 0
+	if timeout > 0 {
+		t := time.NewTimer(timeout)
+		defer t.Stop()
+		deadline = t.C
+	}
 	for {
 		select {
 		case <-h.quit:
 			return nil, fmt.Errorf("closed")
-		case <-deadline.C:
-			return nil, fmt.Errorf("timed out after %s (portal unavailable?)", portalTimeout)
+		case <-deadline:
+			return nil, fmt.Errorf("timed out after %s (portal unavailable?)", timeout)
 		case sig, ok := <-h.signals:
 			if !ok {
 				return nil, fmt.Errorf("signal channel closed")
@@ -222,8 +241,72 @@ func (h *Hotkey) waitResponse(reqPath dbus.ObjectPath) (map[string]dbus.Variant,
 }
 
 // shortcutProps builds the (a{sv}) properties for one registered shortcut.
-func shortcutProps(description string) map[string]dbus.Variant {
-	return map[string]dbus.Variant{"description": dbus.MakeVariant(description)}
+// trigger, when non-empty, is the suggested key combo (preferred_trigger).
+func shortcutProps(description, trigger string) map[string]dbus.Variant {
+	p := map[string]dbus.Variant{"description": dbus.MakeVariant(description)}
+	if trigger != "" {
+		p["preferred_trigger"] = dbus.MakeVariant(trigger)
+	}
+	return p
+}
+
+// portalTrigger renders a GlobalShortcuts preferred_trigger (e.g. "LOGO+k")
+// from vole's mods ("Super") and key ("k"); withShift adds Shift (for the
+// alternate-language shortcut). Returns "" if the key is not representable.
+func portalTrigger(mods, key string, withShift bool) string {
+	var parts []string
+	seen := map[string]bool{}
+	add := func(tok string) {
+		if tok != "" && !seen[tok] {
+			seen[tok] = true
+			parts = append(parts, tok)
+		}
+	}
+	for _, m := range strings.Split(mods, "+") {
+		switch strings.ToLower(strings.TrimSpace(m)) {
+		case "super", "mod4", "win", "meta", "logo":
+			add("LOGO")
+		case "ctrl", "control":
+			add("CTRL")
+		case "alt", "mod1":
+			add("ALT")
+		case "shift":
+			add("SHIFT")
+		}
+	}
+	if withShift {
+		add("SHIFT")
+	}
+	k := portalKey(key)
+	if k == "" {
+		return ""
+	}
+	parts = append(parts, k)
+	return strings.Join(parts, "+")
+}
+
+// portalKey maps a vole key name to a portal trigger key token. Latin
+// letters/digits map directly; a few named keys are handled; others yield "".
+func portalKey(key string) string {
+	key = strings.TrimSpace(key)
+	if len(key) == 1 {
+		c := key[0]
+		switch {
+		case c >= 'a' && c <= 'z', c >= '0' && c <= '9':
+			return key
+		case c >= 'A' && c <= 'Z':
+			return strings.ToLower(key)
+		}
+	}
+	switch strings.ToLower(key) {
+	case "space":
+		return "space"
+	case "pause":
+		return "Pause"
+	case "menu":
+		return "Menu"
+	}
+	return ""
 }
 
 // shortcutID extracts the shortcut id (Body[1]) from an Activated/Deactivated signal.

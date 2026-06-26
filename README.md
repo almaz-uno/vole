@@ -89,10 +89,14 @@ to the Wayland backend automatically. Two pieces differ from X11:
 
 **Push-to-talk** uses the `org.freedesktop.portal.GlobalShortcuts` portal. vole
 registers two shortcut *ids* — `dictate` (base language) and `dictate-alt`
-(alternate language) — and you bind the actual keys in **System Settings →
-Shortcuts** (the `mods`/`key` config fields do not apply). The portal reports
-press/release, so push-to-talk works; it cannot observe a live Shift, so the two
-languages are separate keys rather than a Shift toggle.
+(alternate language) — and you assign the actual keys in **System Settings →
+Shortcuts**. On first run KDE shows a consent dialog ("allow this app to register
+global shortcuts") — confirm it, and the two shortcuts then appear under
+Shortcuts. The `mods`/`key` config seeds a *suggested* trigger: `dictate` gets
+`mods+key`, `dictate-alt` gets `mods+Shift+key` (e.g. `mods: Super, key: k` →
+`Meta+K` / `Meta+Shift+K`); KDE may pre-fill it, and you can still override. The
+portal reports press/release, so push-to-talk works; it cannot observe a live
+Shift, so the two languages are separate keys rather than a Shift toggle.
 
 **Text injection** stays on `xdotool`. On KWin/Mutter, `xdotool type` reaches the
 focused window — including native Wayland ones — through Xwayland's XTEST bridge,

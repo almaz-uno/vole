@@ -4,7 +4,7 @@
 # Input/output backend:
 #   auto     (default) Wayland if WAYLAND_DISPLAY / XDG_SESSION_TYPE=wayland, else X11
 #   x11      XGrabKey hotkey + xdotool injection + floating overlay
-#   wayland  GlobalShortcuts portal + ydotool/wtype/clipboard injection + tray only
+#   wayland  GlobalShortcuts portal + xdotool injection (via Xwayland) + tray only
 # Override with the VOLE_BACKEND env var.
 backend: auto
 
@@ -14,11 +14,13 @@ backend: auto
 # (lang <-> lang_shift). mods/key bind the actual key here.
 #
 # Wayland: the portal cannot observe a live Shift, so vole registers two
-# shortcuts — "dictate" (lang) and "dictate-alt" (lang_shift) — that you bind to
-# keys yourself in System Settings → Shortcuts. mods/key are ignored.
+# shortcuts — "dictate" (lang) and "dictate-alt" (lang_shift) — that you assign
+# in System Settings → Shortcuts. There mods/key only seed the *suggested*
+# trigger: "dictate" gets mods+key and "dictate-alt" gets mods+Shift+key (KDE may
+# pre-fill it; you can still override). E.g. mods: Super, key: k → Meta+K / Meta+Shift+K.
 hotkey:
-  mods: Super+Control   # modifiers: Super, Control, Alt, Shift (joined with +)  [X11]
-  key: d                # key (a Latin letter/digit, or space/pause/menu)        [X11]
+  mods: Super+Control   # modifiers: Super, Control, Alt, Shift (joined with +)
+  key: d                # key (a Latin letter/digit, or space/pause/menu)
   lang: ru              # language without Shift / "dictate" shortcut
   lang_shift: en        # language while Shift is held / "dictate-alt" shortcut
 

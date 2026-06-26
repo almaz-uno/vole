@@ -49,6 +49,8 @@ func (d *Daemon) startHotkey(backend platform.Backend) {
 		hk, err = wayland.NewHotkey(wayland.HotkeyConfig{
 			LangBase:  d.cfg.Hotkey.Lang,
 			LangShift: d.cfg.Hotkey.LangShift,
+			Mods:      d.cfg.Hotkey.Mods, // seeds the portal's suggested trigger
+			Key:       d.cfg.Hotkey.Key,
 		})
 	default: // X11 — the daemon grabs the key itself (reliable release + live Shift)
 		hk, err = hotkey.New(hotkey.Config{

@@ -61,15 +61,28 @@ to it over DBus (`github.com/godbus/dbus/v5`).
 
 Implementation (`internal/wayland/hotkey.go`): `CreateSession` →
 `BindShortcuts` → listen for `Activated`/`Deactivated`, using the Request/Response
-portal pattern with per-request `handle_token`s and a timeout so a missing or
-unresponsive portal degrades to tray-only instead of hanging.
+portal pattern with per-request `handle_token`s. `CreateSession` is bounded by a
+short timeout (so a portal that lacks GlobalShortcuts degrades to tray-only).
+`BindShortcuts` is *interactive* on KDE — `xdg-desktop-portal-kde` pops a consent
+dialog ("allow this app to register global shortcuts") and only answers the
+Request once the user confirms — so vole waits for it *without a deadline*
+(bounding it at 30s, as the first cut did, abandons the request mid-dialog and
+PTT never binds; verified on ws7).
 
-The user binds the actual keys in the compositor's shortcut UI (*System Settings
-→ Shortcuts*), not in `config.yaml`; vole only registers shortcut *ids* and
-descriptions. The portal cannot observe a live Shift, so live
+The user assigns the actual keys in the compositor's shortcut UI (*System
+Settings → Shortcuts*); vole registers shortcut *ids* + descriptions and a
+`preferred_trigger` derived from `config.yaml` (`mods+key` for `dictate`,
+`mods+Shift+key` for `dictate-alt` — e.g. `Super`/`k` → `LOGO+k` / `LOGO+SHIFT+k`).
+KDE may pre-fill the trigger but the user can override it; the consent dialog
+appears on first registration. The portal cannot observe a live Shift, so live
 Shift-to-switch-language is *not* available on Wayland. Decision: register *two*
 shortcuts — `dictate` (base language) and `dictate-alt` (alternate language) —
-each bound to its own key. (`onLang` is therefore never emitted on Wayland.)
+each on its own key. (`onLang` is therefore never emitted on Wayland.)
+
+Open: with an empty `app_id` (unsandboxed binary), KDE may re-show the consent
+dialog on each start; a `.desktop` entry / `app-vole.service` unit name may let
+the portal derive a stable app_id and persist the grant (deployment-side, not
+code).
 
 Rejected: libei / RemoteDesktop portal (heavier, injection-focused) and raw
 evdev (`/dev/input/event*`, invasive permissions).

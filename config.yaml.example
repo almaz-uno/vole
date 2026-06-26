@@ -1,13 +1,26 @@
 # vole configuration. Copy to ~/.config/vole/config.yaml and edit to taste.
 # Any field may be omitted — defaults are used for missing ones.
 
+# Input/output backend:
+#   auto     (default) Wayland if WAYLAND_DISPLAY / XDG_SESSION_TYPE=wayland, else X11
+#   x11      XGrabKey hotkey + xdotool injection + floating overlay
+#   wayland  GlobalShortcuts portal + ydotool/wtype/clipboard injection + tray only
+# Override with the VOLE_BACKEND env var.
+backend: auto
+
 # PTT hotkey: hold to record, release to transcribe and inject.
-# While the key is held, Shift switches the language on the fly (lang <-> lang_shift).
+#
+# X11: while the key is held, Shift switches the language on the fly
+# (lang <-> lang_shift). mods/key bind the actual key here.
+#
+# Wayland: the portal cannot observe a live Shift, so vole registers two
+# shortcuts — "dictate" (lang) and "dictate-alt" (lang_shift) — that you bind to
+# keys yourself in System Settings → Shortcuts. mods/key are ignored.
 hotkey:
-  mods: Super+Control   # modifiers: Super, Control, Alt, Shift (joined with +)
-  key: d                # key (a Latin letter/digit, or space/pause/menu)
-  lang: ru              # language without Shift
-  lang_shift: en        # language while Shift is held
+  mods: Super+Control   # modifiers: Super, Control, Alt, Shift (joined with +)  [X11]
+  key: d                # key (a Latin letter/digit, or space/pause/menu)        [X11]
+  lang: ru              # language without Shift / "dictate" shortcut
+  lang_shift: en        # language while Shift is held / "dictate-alt" shortcut
 
 # Silence threshold (peak RMS): recordings below it count as empty and are skipped.
 silence_threshold: 0.005

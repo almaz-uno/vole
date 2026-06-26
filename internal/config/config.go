@@ -25,6 +25,7 @@ type Config struct {
 	Model            string  `yaml:"model"`
 	VAD              string  `yaml:"vad"`
 	Socket           string  `yaml:"socket"`
+	Backend          string  `yaml:"backend"` // input/output backend: auto|x11|wayland
 }
 
 // Defaults returns the default configuration (used when no file is present).
@@ -36,6 +37,7 @@ func Defaults() Config {
 		Model:            filepath.Join(home, ".local/share/dictation/whisper.cpp/models/ggml-large-v3.bin"),
 		VAD:              filepath.Join(home, ".local/share/dictation/whisper.cpp/models/ggml-silero-v5.1.2.bin"),
 		Socket:           socketDefault(),
+		Backend:          "auto",
 	}
 }
 
@@ -62,6 +64,9 @@ func Load() Config {
 	}
 	if v := os.Getenv("VOLE_SOCK"); v != "" {
 		c.Socket = v
+	}
+	if v := os.Getenv("VOLE_BACKEND"); v != "" {
+		c.Backend = v
 	}
 	c.Model = expandHome(c.Model)
 	c.VAD = expandHome(c.VAD)

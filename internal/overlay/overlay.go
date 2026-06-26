@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/almaz-uno/vole/internal/platform"
 	"github.com/jezek/xgb"
 	"github.com/jezek/xgb/xproto"
 	"golang.org/x/image/font"
@@ -23,15 +24,18 @@ import (
 	"golang.org/x/image/math/fixed"
 )
 
-// Mode is the indicator state.
-type Mode int
+// Mode is the indicator state. It aliases platform.Mode so *Overlay satisfies
+// platform.Indicator directly.
+type Mode = platform.Mode
 
 const (
-	ModeHidden Mode = iota
-	ModeRecording
-	ModeProcessing
-	ModeDownloading
+	ModeHidden      = platform.ModeHidden
+	ModeRecording   = platform.ModeRecording
+	ModeProcessing  = platform.ModeProcessing
+	ModeDownloading = platform.ModeDownloading
 )
+
+var _ platform.Indicator = (*Overlay)(nil)
 
 const (
 	winW, winH  = 188, 46

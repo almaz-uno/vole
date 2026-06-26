@@ -15,10 +15,8 @@ import (
 
 	"github.com/almaz-uno/vole/internal/audio"
 	"github.com/almaz-uno/vole/internal/config"
-	"github.com/almaz-uno/vole/internal/hotkey"
-	"github.com/almaz-uno/vole/internal/inject"
 	"github.com/almaz-uno/vole/internal/models"
-	"github.com/almaz-uno/vole/internal/overlay"
+	"github.com/almaz-uno/vole/internal/platform"
 	"github.com/almaz-uno/vole/internal/tray"
 	"github.com/almaz-uno/vole/internal/whisper"
 )
@@ -38,9 +36,11 @@ type Daemon struct {
 	ctx        *whisper.Context
 	modelReady chan struct{} // closed once the model is loaded
 
-	ov        *overlay.Overlay
+	ind       platform.Indicator // overlay (X11) or Nop (Wayland tray-only); never nil
+	inj       platform.Injector  // text injection backend; never nil
+	hk        platform.Hotkey    // PTT source; nil if unavailable
 	tr        *tray.Tray
-	levelStop chan struct{} // stops the goroutine feeding the level to the overlay
+	levelStop chan struct{} // stops the goroutine feeding the level to the indicator
 }
 
 // Run starts the daemon. If the socket is already served, it exits quietly
@@ -63,33 +63,25 @@ func Run() error {
 
 	d := &Daemon{cfg: cfg, rec: &audio.Recorder{}, enabled: true, modelReady: make(chan struct{})}
 
-	// overlay near the cursor; if X is unavailable, run without it
-	if ov, err := overlay.New(); err != nil {
-		fmt.Fprintln(os.Stderr, "vole daemon: overlay unavailable:", err)
-	} else {
-		d.ov = ov
-		defer d.ov.Close()
-	}
+	// pick the input/output backend (X11 or Wayland)
+	backend := platform.Detect(platform.Backend(cfg.Backend))
+	fmt.Fprintf(os.Stderr, "[vole] backend: %s\n", backend)
+	d.setupIO(backend)
+	defer d.ind.Close()
 
 	// system-tray icon: state by color, toggle on/off, quit
 	d.tr = tray.Run(d.toggleEnabled, func() { os.Exit(0) })
 
-	// global PTT hotkey — the daemon grabs it itself (reliable release + live Shift)
-	if g, err := hotkey.New(hotkey.Config{
-		Mods:      cfg.Hotkey.Mods,
-		Key:       cfg.Hotkey.Key,
-		LangBase:  cfg.Hotkey.Lang,
-		LangShift: cfg.Hotkey.LangShift,
-	}); err != nil {
-		fmt.Fprintln(os.Stderr, "vole daemon: hotkey:", err)
-	} else {
-		defer g.Close()
-		go g.Listen(
-			func(lang string) { d.start(lang) },   // PTT press
-			func(lang string) { d.setLang(lang) }, // live Shift
-			func(lang string) { d.stop(lang) },    // release (final language)
-		)
-	}
+	// global PTT hotkey, asynchronously (the Wayland portal handshake may block)
+	go d.startHotkey(backend)
+	defer func() {
+		d.mu.Lock()
+		hk := d.hk
+		d.mu.Unlock()
+		if hk != nil {
+			hk.Close()
+		}
+	}()
 
 	// load the model in the background — the socket already accepts commands
 	go func() {
@@ -158,11 +150,9 @@ func (d *Daemon) start(lang string) {
 	d.lang = lang
 	d.recording = true
 
-	if d.ov != nil {
-		d.ov.Show(lang)
-		d.levelStop = make(chan struct{})
-		go d.feedLevel(d.levelStop)
-	}
+	d.ind.Show(lang)
+	d.levelStop = make(chan struct{})
+	go d.feedLevel(d.levelStop)
 	if d.tr != nil {
 		d.tr.SetState(tray.StateRecording)
 	}
@@ -180,9 +170,7 @@ func (d *Daemon) ensureModels() error {
 			continue
 		}
 		notify("🎤 vole", "downloading "+it.label+"…")
-		if d.ov != nil {
-			d.ov.ShowDownload(it.label)
-		}
+		d.ind.ShowDownload(it.label)
 		err := models.Ensure(it.path, func(done, total int64) {
 			frac := 0.0
 			if total > 0 {
@@ -191,13 +179,9 @@ func (d *Daemon) ensureModels() error {
 			if d.tr != nil {
 				d.tr.SetTooltip(fmt.Sprintf("vole: downloading %s %d%%", it.label, int(frac*100)))
 			}
-			if d.ov != nil {
-				d.ov.SetProgress(frac)
-			}
+			d.ind.SetProgress(frac)
 		})
-		if d.ov != nil {
-			d.ov.Hide()
-		}
+		d.ind.Hide()
 		if d.tr != nil {
 			d.tr.SetTooltip("vole — voice dictation")
 		}
@@ -238,12 +222,10 @@ func (d *Daemon) setLang(lang string) {
 		d.lang = lang
 	}
 	d.mu.Unlock()
-	if d.ov != nil {
-		d.ov.SetLang(lang)
-	}
+	d.ind.SetLang(lang)
 }
 
-// feedLevel pumps the signal level from the recorder into the overlay while recording.
+// feedLevel pumps the signal level from the recorder into the indicator while recording.
 func (d *Daemon) feedLevel(stop chan struct{}) {
 	t := time.NewTicker(33 * time.Millisecond)
 	defer t.Stop()
@@ -252,7 +234,7 @@ func (d *Daemon) feedLevel(stop chan struct{}) {
 		case <-stop:
 			return
 		case <-t.C:
-			d.ov.SetLevel(d.rec.Level())
+			d.ind.SetLevel(d.rec.Level())
 		}
 	}
 }
@@ -279,18 +261,14 @@ func (d *Daemon) stop(lang string) string {
 	audioSec := float64(len(samples)) / float64(audio.SampleRate)
 	if peak < d.cfg.SilenceThreshold {
 		fmt.Fprintf(os.Stderr, "[vole] silence: peak=%.4f, %.1fs audio — skipping\n", peak, audioSec)
-		if d.ov != nil {
-			d.ov.Hide()
-		}
+		d.ind.Hide()
 		if d.tr != nil {
 			d.tr.SetState(tray.StateIdle)
 		}
 		return "" // silence / empty press — don't inject hallucinations
 	}
 
-	if d.ov != nil {
-		d.ov.SetMode(overlay.ModeProcessing) // overlay: transcribing
-	}
+	d.ind.SetMode(platform.ModeProcessing) // indicator: transcribing
 	if d.tr != nil {
 		d.tr.SetState(tray.StateProcessing)
 	}
@@ -299,9 +277,7 @@ func (d *Daemon) stop(lang string) string {
 	t0 := time.Now()
 	text, err := d.ctx.Transcribe(samples, d.lang, threads)
 	dur := time.Since(t0)
-	if d.ov != nil {
-		d.ov.Hide()
-	}
+	d.ind.Hide()
 	if d.tr != nil {
 		d.tr.SetState(tray.StateIdle)
 	}
@@ -311,7 +287,7 @@ func (d *Daemon) stop(lang string) string {
 	}
 	fmt.Fprintf(os.Stderr, "[vole] %s | audio %.1fs | transcribed in %.2fs | peak=%.3f | %q\n",
 		d.lang, audioSec, dur.Seconds(), peak, text)
-	if err := inject.Type(text); err != nil {
+	if err := d.inj.Type(text); err != nil {
 		fmt.Fprintln(os.Stderr, "vole daemon: inject:", err)
 	}
 	return text

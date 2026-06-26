@@ -1,0 +1,188 @@
+= vole on Wayland — Design Notes
+:toc: left
+:toclevels: 3
+
+How vole runs under Wayland compositors (primary target: KDE Plasma / KWin, e.g.
+SteamOS desktop on a Steam Deck). vole started X11-only; this document records
+what actually breaks on Wayland, the design we landed on, and how to validate it.
+
+[NOTE]
+====
+*Status: implemented.* A `platform` abstraction selects an X11 or Wayland backend
+at runtime. The Wayland backend is: *GlobalShortcuts portal* for push-to-talk,
+*xdotool* for text injection (works on KWin via Xwayland — see below), and a
+*tray-only* indicator. The whisper/Vulkan core and the SNI tray are unchanged.
+====
+
+== What actually breaks on Wayland
+
+Of vole's three X11 mechanisms, only two break under a native Wayland session.
+Text injection — contrary to the original assumption — keeps working on KWin.
+
+[cols="1,3"]
+|===
+| Component | Status on a native Wayland session
+
+| Global hotkey
+| *Breaks.* `internal/hotkey` uses `XGrabKey` on the root window. Under Wayland
+  the compositor owns all input; Xwayland cannot grab keys globally, so PTT never
+  fires for native Wayland windows. → replaced by the GlobalShortcuts portal.
+
+| Text injection
+| *Works as-is on KWin.* `internal/inject` shells out to `xdotool type`, which
+  sends XTEST fake input to Xwayland; KWin (and Mutter) route emulated XTEST
+  input to the focused window, *including native Wayland clients*. Because
+  xdotool types keysyms (not raw keycodes), it produces Unicode — Cyrillic
+  included — regardless of the active layout, and it works in terminals (it
+  types, it does not paste). The original "xdotool reaches only Xwayland clients"
+  assumption proved wrong on KWin Plasma 6 (verified on ws7). No fallback is
+  shipped: on a compositor that does not bridge XTEST to native windows (bare
+  wlroots — sway/Hyprland), injection won't reach native clients.
+
+| Overlay
+| *Breaks (cosmetic).* `internal/overlay` maps an override-redirect ARGB window
+  near the cursor. Wayland exposes no global cursor position and no free
+  placement above native windows. → dropped to tray-only on Wayland; the SNI
+  tray reflects state. A layer-shell overlay anchored to a screen edge is a
+  possible future addition.
+|===
+
+The inference core (`internal/whisper`, Vulkan backend) is unaffected — RADV
+drives AMD GPUs (Van Gogh APU confirmed on ws7), so the model loads and runs.
+
+== Design decisions
+
+=== Global hotkey (push-to-talk) — GlobalShortcuts portal
+
+PTT needs *both* a press (start) and a release (stop). The
+`org.freedesktop.portal.GlobalShortcuts` portal (KWin / Plasma 5.27+) emits
+`Activated` / `Deactivated`, which map naturally to PTT press/release. vole talks
+to it over DBus (`github.com/godbus/dbus/v5`).
+
+Implementation (`internal/wayland/hotkey.go`): `CreateSession` →
+`BindShortcuts` → listen for `Activated`/`Deactivated`, using the Request/Response
+portal pattern with per-request `handle_token`s and a timeout so a missing or
+unresponsive portal degrades to tray-only instead of hanging.
+
+The user binds the actual keys in the compositor's shortcut UI (*System Settings
+→ Shortcuts*), not in `config.yaml`; vole only registers shortcut *ids* and
+descriptions. The portal cannot observe a live Shift, so live
+Shift-to-switch-language is *not* available on Wayland. Decision: register *two*
+shortcuts — `dictate` (base language) and `dictate-alt` (alternate language) —
+each bound to its own key. (`onLang` is therefore never emitted on Wayland.)
+
+Rejected: libei / RemoteDesktop portal (heavier, injection-focused) and raw
+evdev (`/dev/input/event*`, invasive permissions).
+
+=== Text injection — xdotool on both backends
+
+Decision: *keep `xdotool`* on Wayland too. On KWin/Mutter it reaches native
+windows through Xwayland's XTEST bridge, types Unicode layout-independently
+(critical for `ru`), and works in terminals. `internal/inject` is shared by both
+backends; there is *no* fallback chain.
+
+Alternatives considered and rejected for the KWin target:
+
+* *ydotool / native uinput* — injects raw evdev keycodes *below* the layout
+  layer, so the compositor applies the active xkb layout: typing is unreliable
+  across layout switches and cannot reproduce Cyrillic. Needs `/dev/uinput`
+  access. Only useful where Xwayland's XTEST bridge is absent (wlroots).
+* *wtype* (`zwp_virtual_keyboard_v1`) — would upload its own keymap, but the
+  virtual-keyboard path does not work on KWin (wlroots-only in practice).
+* *wl-clipboard + synthetic paste* — Unicode-correct, but the paste keystroke is
+  not universal (terminals use Ctrl+Shift+V, GUIs Ctrl+V; Shift+Insert is the
+  closest to universal only if both CLIPBOARD and PRIMARY are populated), and it
+  clobbers the clipboard. Avoided since xdotool already covers the target.
+
+=== Overlay — tray-only on Wayland
+
+The floating cursor overlay stays X11-only. Wayland has no portable cursor-position
+query, and overlays are anchored to a screen edge/corner rather than the cursor.
+On Wayland the SNI tray (already Wayland-native, hosted by Plasma) reflects
+recording/transcribing state. A `zwlr_layer_shell_v1` overlay (e.g. via
+`github.com/rajveermalviya/go-wayland`) anchored to an edge is a future addition;
+the indicator is a `platform.Nop` until then.
+
+== Architecture (implemented)
+
+A small `internal/platform` package holds backend-neutral interfaces; the daemon
+depends only on them and picks a backend at startup.
+
+[source,go]
+----
+// internal/platform
+type Mode int // Hidden, Recording, Processing, Downloading
+
+type Hotkey interface {
+    // Listen blocks; onStart/onStop on press/release, onLang on a live
+    // language change (X11 Shift only — never emitted on Wayland).
+    Listen(onStart, onLang, onStop func(lang string))
+    Close()
+}
+type Injector interface{ Type(text string) error }
+type Indicator interface {
+    Show(lang string); SetLevel(float64); SetLang(string); SetMode(Mode)
+    ShowDownload(label string); SetProgress(frac float64); Hide(); Close()
+}
+
+type Backend string // "auto" | "x11" | "wayland"
+func Detect(Backend) Backend // auto → wayland if WAYLAND_DISPLAY / XDG_SESSION_TYPE
+type Nop struct{}            // no-op Indicator (tray-only / no display)
+----
+
+* X11 implementations: `internal/{hotkey,inject,overlay}`. `overlay.Mode` aliases
+  `platform.Mode`; `inject` and `hotkey` carry compile-time interface assertions.
+* Wayland implementation: `internal/wayland` (portal hotkey). Injection reuses
+  `inject` (xdotool); the indicator is `platform.Nop`.
+* Selection (`internal/daemon/backend.go`): `Detect` resolves the backend from
+  `config.backend` (`auto|x11|wayland`, env `VOLE_BACKEND`) and the session.
+  `setupIO` wires the indicator + injector; `startHotkey` runs the hotkey in a
+  goroutine (the portal handshake may block) and degrades gracefully on error.
+* The SNI tray and the whisper core are unchanged — both are platform-neutral.
+
+== Implementation status (phased)
+
+. [x] *Abstraction*: `Hotkey`/`Injector`/`Indicator` interfaces + `Mode` + `Detect`;
+  X11 code satisfies them; runtime selection. No behavior change on X11.
+. [x] *Wayland injection*: reuse `xdotool` (decided after confirming it reaches
+  native windows on KWin via Xwayland). No ydotool/clipboard fallback.
+. [x] *Wayland hotkey*: GlobalShortcuts portal (DBus); two shortcuts, no live Shift.
+. [x] *Wayland overlay*: tray-only. Layer-shell overlay: not done (future).
+. [x] *Packaging*: backend config + docs. Wayland runtime deps are just `xdotool`
+  + Xwayland (no uinput / udev rule needed for the xdotool path).
+
+== Testing target
+
+ws7 — SteamOS (Steam Deck), AMD Van Gogh APU (RADV/Vulkan). Confirmed state of
+the live session:
+
+* Active graphical session is *KDE Plasma on Wayland* (seat0 / tty1);
+  `kwin_wayland_wrapper --xwayland` running, `Xwayland :0` up.
+* `org.freedesktop.portal.GlobalShortcuts` present on the session portal → PTT works.
+* `xdotool`, `parec`, `glslc`, 64-bit `libvulkan` present → injection + capture work.
+* Plasma hosts SNI, so the tray works natively.
+* Immutable rootfs, no `go`/`gcc`/`cmake` — deploy the prebuilt release artifact
+  (glibc there is newer than the CI runner's, so the binary runs).
+* When launched outside the graphical session (e.g. `systemd --user`), import
+  `DISPLAY`/`XAUTHORITY` so xdotool finds Xwayland.
+* Validate, in order: model loads on RADV → portal shortcut fires PTT → xdotool
+  types into a native Wayland app (check a terminal and Cyrillic) → tray reflects
+  state.
+* For an APU prefer a lighter model (`large-v3-turbo`) over `large-v3`.
+
+== Resolved questions
+
+* *Live Shift on Wayland* → dropped; two separate portal shortcuts
+  (`dictate` / `dictate-alt`) instead.
+* *uinput permissions on SteamOS* → moot; injection uses xdotool, not uinput, so
+  no `/dev/uinput` access or udev rule is required.
+* *Injection fallback when a tool is missing* → none. If xdotool can't reach,
+  injection does nothing (by decision: "if it's not there, it's not there").
+* *layer-shell Go binding* → deferred; tray-only for now.
+
+== Known limitations
+
+* No injection on compositors without an XTEST→native bridge (bare wlroots:
+  sway/Hyprland) — the design targets KWin/Plasma.
+* No live language switch on Wayland (portal limitation).
+* No floating overlay on Wayland yet (tray reflects state).

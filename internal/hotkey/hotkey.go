@@ -11,9 +11,12 @@ import (
 	"sync"
 	"time"
 
+	"github.com/almaz-uno/vole/internal/platform"
 	"github.com/jezek/xgb"
 	"github.com/jezek/xgb/xproto"
 )
+
+var _ platform.Hotkey = (*Grabber)(nil)
 
 // releaseDebounce suppresses spurious releases from the main key's X autorepeat.
 const releaseDebounce = 60 * time.Millisecond

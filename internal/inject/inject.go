@@ -1,13 +1,31 @@
-// Package inject types the transcribed text into the active window.
+// Package inject types the transcribed text into the active window via xdotool.
+// It is used on both backends: on X11 directly, and on a Wayland session through
+// Xwayland's XTEST bridge (KWin/Mutter route emulated input to the focused
+// native window). Because xdotool types keysyms (not raw keycodes), it produces
+// Unicode — Cyrillic included — regardless of the active keyboard layout, and it
+// works in terminals (it types, it does not paste).
 package inject
 
 import (
 	"fmt"
 	"os/exec"
 	"strings"
+
+	"github.com/almaz-uno/vole/internal/platform"
 )
 
-// Type types text into the active window via xdotool (X11).
+// Injector is the xdotool text injector. It satisfies platform.Injector.
+type Injector struct{}
+
+var _ platform.Injector = Injector{}
+
+// New returns the xdotool injector.
+func New() Injector { return Injector{} }
+
+// Type types text into the active window via xdotool.
+func (Injector) Type(text string) error { return Type(text) }
+
+// Type types text into the active window via xdotool.
 // The text is passed over stdin (--file -) to avoid argument-length limits
 // and shell quoting issues with special characters.
 func Type(text string) error {

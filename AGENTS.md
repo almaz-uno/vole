@@ -36,18 +36,32 @@ language server resolves the cgo package.
 - `whisper` — thin cgo wrapper over whisper.cpp (model load, transcribe).
 - `audio` — microphone capture via `parec` (streamed PCM + RMS level) and WAV decode.
 - `daemon` — resident server: unix socket, orchestrates capture/transcribe/inject,
-  drives overlay and tray, owns the global hotkey.
-- `inject` — types text into the focused window via `xdotool`.
-- `overlay` — borderless ARGB X11 window near the cursor (status dot + VU meter).
-- `hotkey` — global PTT via X11 `XGrabKey` (reliable release, live Shift = language switch).
+  drives the indicator and tray, owns the global hotkey. Picks an X11 or Wayland
+  backend at startup (`backend.go`); the rest depends only on `platform`.
+- `platform` — backend-neutral interfaces (`Hotkey`, `Injector`, `Indicator`) +
+  `Mode`, and `Detect` (auto-select from `WAYLAND_DISPLAY` / `XDG_SESSION_TYPE`).
+- `inject` — types text via `xdotool` (both backends; on Wayland it reaches
+  native windows through Xwayland's XTEST bridge and types Unicode layout-independently).
+- `overlay` (X11) — borderless ARGB window near the cursor (status dot + VU meter).
+- `hotkey` (X11) — global PTT via `XGrabKey` (reliable release, live Shift = language switch).
+- `wayland` — Wayland backend: PTT via the GlobalShortcuts desktop portal (DBus).
+  Injection stays on `inject` (xdotool); indicator is tray-only.
 - `tray` — StatusNotifier (DBus/SNI) icon: state color + enable/disable toggle.
 - `config` — defaults ← `~/.config/vole/config.yaml` ← env overrides.
 
 ## Runtime dependencies
 
-`parec` (PulseAudio/PipeWire), `xdotool`, an X11 compositor (for overlay
-transparency), an SNI tray host (e.g. lxqt-panel), and the ggml models
+Common: `parec` (PulseAudio/PipeWire), `xdotool` (text injection), an SNI tray
+host (e.g. lxqt-panel; KDE hosts SNI natively), and the ggml models
 (`ggml-large-v3`, `ggml-silero-v5.1.2` for VAD).
+
+- **X11**: a compositor (for overlay transparency).
+- **Wayland**: a GlobalShortcuts portal (KWin 5.27+) for PTT, and Xwayland in the
+  session so `xdotool` can inject. Selected when `WAYLAND_DISPLAY` /
+  `XDG_SESSION_TYPE=wayland` unless `backend` overrides it. No injection fallback:
+  on a compositor that does not bridge XTEST to native windows (bare wlroots),
+  injection won't reach native clients. The cursor overlay is X11-only (tray
+  reflects state on Wayland); a layer-shell overlay is a future addition.
 
 ## Conventions
 

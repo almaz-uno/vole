@@ -3,10 +3,27 @@
 
 # Input/output backend:
 #   auto     (default) Wayland if WAYLAND_DISPLAY / XDG_SESSION_TYPE=wayland, else X11
-#   x11      XGrabKey hotkey + xdotool injection + floating overlay
-#   wayland  GlobalShortcuts portal + xdotool injection (via Xwayland) + tray only
+#   x11      XGrabKey hotkey + floating overlay
+#   wayland  GlobalShortcuts portal + tray only
 # Override with the VOLE_BACKEND env var.
 backend: auto
+
+# Text injection method:
+#   auto   (default) type on X11, paste on Wayland
+#   type   xdotool types the text (only correct on a real X server; on KWin
+#          Wayland the active layout garbles non-Latin text, e.g. Cyrillic)
+#   paste  put the text on the clipboard and paste it with a keystroke
+#          (layout-independent; the only correct option for Cyrillic on KWin).
+#          Clipboard backend auto-detected: Klipper / wl-copy / xclip / xsel.
+inject: auto
+
+# Paste keystroke for inject=paste (xdotool key syntax). Default Shift+Insert
+# (works in most GUI apps); terminals (Konsole) may need ctrl+shift+v.
+# paste_key: shift+Insert
+
+# inject=paste only: auto-paste after dictation. false = just put it on the
+# clipboard and paste it yourself. Clicking a history entry always pastes.
+auto_paste: true
 
 # PTT hotkey: hold to record, release to transcribe and inject.
 #
@@ -24,8 +41,17 @@ hotkey:
   lang: ru              # language without Shift / "dictate" shortcut
   lang_shift: en        # language while Shift is held / "dictate-alt" shortcut
 
-# Silence threshold (peak RMS): recordings below it count as empty and are skipped.
+# Silence threshold (peak RMS): recordings below it count as empty and are
+# skipped. Lower it if quiet/whispered speech is dropped.
 silence_threshold: 0.005
+
+# VAD speech-probability threshold [0,1]: lower catches quieter/whispered speech
+# (default 0.3; whisper's own default is 0.5).
+vad_threshold: 0.3
+
+# Recent dictations: shown in the tray menu (click one to paste it) and persisted.
+history_size: 256
+# history_file: ~/.local/state/vole/history.jsonl
 
 # Model paths (~ is supported). Defaults to the whisper.cpp build directory.
 model: ~/.local/share/dictation/whisper.cpp/models/ggml-large-v3.bin

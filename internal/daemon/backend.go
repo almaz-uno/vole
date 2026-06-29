@@ -3,6 +3,7 @@ package daemon
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/almaz-uno/vole/internal/hotkey"
 	"github.com/almaz-uno/vole/internal/inject"
@@ -15,12 +16,20 @@ import (
 // always set (the indicator falls back to a no-op so the rest of the daemon
 // needs no nil checks).
 func (d *Daemon) setupIO(backend platform.Backend) {
-	// Injection is xdotool on both backends. On a KWin/Mutter Wayland session it
-	// reaches native windows through Xwayland's XTEST bridge, and — unlike raw
-	// uinput — it types Unicode regardless of the active keyboard layout, so
-	// Cyrillic and terminals work. If xdotool can't reach (e.g. bare wlroots, or
-	// no Xwayland), injection simply does nothing; there is no fallback.
-	d.inj = inject.New()
+	// Injection method is independent of the backend (config: auto|type|paste).
+	// "type" = xdotool (only correct on a real X server). "paste" = clipboard +
+	// a paste keystroke (layout-independent, the only option that types Cyrillic
+	// correctly on KWin Wayland). "auto" = type on X11, paste on Wayland.
+	if injectIsPaste(d.cfg.Inject, backend) {
+		if p := inject.NewPaste(d.cfg.PasteKey, d.cfg.AutoPaste); p.Available() {
+			d.inj = p
+		} else {
+			fmt.Fprintln(os.Stderr, "vole daemon: no clipboard backend — falling back to xdotool typing")
+			d.inj = inject.New()
+		}
+	} else {
+		d.inj = inject.New()
+	}
 
 	if backend == platform.BackendWayland {
 		// Tray-only first cut: the SNI tray already shows state and is
@@ -33,6 +42,19 @@ func (d *Daemon) setupIO(backend platform.Backend) {
 		d.ind = platform.Nop{}
 	} else {
 		d.ind = ov
+	}
+}
+
+// injectIsPaste resolves the configured injection method to paste (true) or
+// type (false). "auto" pastes on Wayland and types on X11.
+func injectIsPaste(method string, backend platform.Backend) bool {
+	switch strings.ToLower(strings.TrimSpace(method)) {
+	case "paste":
+		return true
+	case "type":
+		return false
+	default: // auto
+		return backend == platform.BackendWayland
 	}
 }
 

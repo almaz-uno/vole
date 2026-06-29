@@ -10,14 +10,14 @@ what actually breaks on Wayland, the design we landed on, and how to validate it
 ====
 *Status: implemented.* A `platform` abstraction selects an X11 or Wayland backend
 at runtime. The Wayland backend is: *GlobalShortcuts portal* for push-to-talk,
-*xdotool* for text injection (works on KWin via Xwayland — see below), and a
-*tray-only* indicator. The whisper/Vulkan core and the SNI tray are unchanged.
+*clipboard-paste* for text injection (xdotool typing is garbled by KWin's layout
+— see below), and a *tray-only* indicator. The whisper/Vulkan core and the SNI
+tray are unchanged.
 ====
 
 == What actually breaks on Wayland
 
-Of vole's three X11 mechanisms, only two break under a native Wayland session.
-Text injection — contrary to the original assumption — keeps working on KWin.
+All three of vole's X11 mechanisms need Wayland-specific handling.
 
 [cols="1,3"]
 |===
@@ -29,15 +29,20 @@ Text injection — contrary to the original assumption — keeps working on KWin
   fires for native Wayland windows. → replaced by the GlobalShortcuts portal.
 
 | Text injection
-| *Works as-is on KWin.* `internal/inject` shells out to `xdotool type`, which
-  sends XTEST fake input to Xwayland; KWin (and Mutter) route emulated XTEST
-  input to the focused window, *including native Wayland clients*. Because
-  xdotool types keysyms (not raw keycodes), it produces Unicode — Cyrillic
-  included — regardless of the active layout, and it works in terminals (it
-  types, it does not paste). The original "xdotool reaches only Xwayland clients"
-  assumption proved wrong on KWin Plasma 6 (verified on ws7). No fallback is
-  shipped: on a compositor that does not bridge XTEST to native windows (bare
-  wlroots — sway/Hyprland), injection won't reach native clients.
+| *Breaks subtly.* `xdotool type` *does* reach the focused window — including
+  native Wayland ones — via Xwayland's XTEST bridge (KWin/Mutter route emulated
+  input to the seat). But XTEST delivers *keycodes*, and KWin re-applies the
+  *active keyboard layout* to them. So dictating Cyrillic under a US layout types
+  transliterated Latin ("раз"→"Hfp"); verified on ws7. xdotool's keysym-remap
+  trick (which works on a real X server) is bypassed because KWin owns the
+  keymap. → replaced by clipboard-paste (layout-independent).
+
+| Overlay
+| *Breaks (cosmetic).* `internal/overlay` maps an override-redirect ARGB window
+  near the cursor. Wayland exposes no global cursor position and no free
+  placement above native windows. → dropped to tray-only on Wayland; the SNI
+  tray reflects state. A layer-shell overlay anchored to a screen edge is a
+  possible future addition.
 
 | Overlay
 | *Breaks (cosmetic).* `internal/overlay` maps an override-redirect ARGB window
@@ -87,25 +92,34 @@ code).
 Rejected: libei / RemoteDesktop portal (heavier, injection-focused) and raw
 evdev (`/dev/input/event*`, invasive permissions).
 
-=== Text injection — xdotool on both backends
+=== Text injection — clipboard-paste on Wayland, xdotool on X11
 
-Decision: *keep `xdotool`* on Wayland too. On KWin/Mutter it reaches native
-windows through Xwayland's XTEST bridge, types Unicode layout-independently
-(critical for `ru`), and works in terminals. `internal/inject` is shared by both
-backends; there is *no* fallback chain.
+X11 keeps `xdotool type`: a real X server delivers the typed keysyms directly
+(xdotool remaps a spare keycode for chars outside the layout), so Cyrillic works
+regardless of the active layout. `internal/inject`.
+
+Wayland (`internal/wayland/inject.go`): *clipboard-paste*. vole puts the
+transcribed text on the clipboard via *KDE Klipper* over DBus
+(`org.kde.klipper.klipper.setClipboardContents` — layout-independent, correct for
+any Unicode) and synthesizes a paste keystroke with `xdotool key` (default
+*Shift+Insert*, configurable via `paste_key` — Konsole may want `ctrl+shift+v`).
+The paste key uses only layout-independent keys (Shift/Insert), so it is immune
+to the keycode→layout problem that breaks typing. Klipper is the clipboard
+backend (always present on Plasma; `wl-clipboard` is a fallback if found).
 
 Alternatives considered and rejected for the KWin target:
 
-* *ydotool / native uinput* — injects raw evdev keycodes *below* the layout
-  layer, so the compositor applies the active xkb layout: typing is unreliable
-  across layout switches and cannot reproduce Cyrillic. Needs `/dev/uinput`
-  access. Only useful where Xwayland's XTEST bridge is absent (wlroots).
+* *xdotool type* (the first attempt) — reaches the window but KWin re-applies the
+  active layout to the XTEST keycodes, so Cyrillic is transliterated. Unusable
+  for `ru` on a US layout.
+* *ydotool / native uinput* — same problem one layer lower: injects raw evdev
+  keycodes, the compositor applies the active xkb layout. Needs `/dev/uinput`.
 * *wtype* (`zwp_virtual_keyboard_v1`) — would upload its own keymap, but the
   virtual-keyboard path does not work on KWin (wlroots-only in practice).
-* *wl-clipboard + synthetic paste* — Unicode-correct, but the paste keystroke is
-  not universal (terminals use Ctrl+Shift+V, GUIs Ctrl+V; Shift+Insert is the
-  closest to universal only if both CLIPBOARD and PRIMARY are populated), and it
-  clobbers the clipboard. Avoided since xdotool already covers the target.
+
+Trade-offs of clipboard-paste: it clobbers the clipboard (no restore yet), and no
+single paste key is universal — Shift+Insert pastes CLIPBOARD in GUI apps but the
+PRIMARY selection in Konsole (hence `paste_key` is configurable).
 
 === Overlay — tray-only on Wayland
 
@@ -145,8 +159,8 @@ type Nop struct{}            // no-op Indicator (tray-only / no display)
 
 * X11 implementations: `internal/{hotkey,inject,overlay}`. `overlay.Mode` aliases
   `platform.Mode`; `inject` and `hotkey` carry compile-time interface assertions.
-* Wayland implementation: `internal/wayland` (portal hotkey). Injection reuses
-  `inject` (xdotool); the indicator is `platform.Nop`.
+* Wayland implementation: `internal/wayland` (portal hotkey + clipboard-paste
+  injector); the indicator is `platform.Nop`. X11 still uses `inject` (xdotool).
 * Selection (`internal/daemon/backend.go`): `Detect` resolves the backend from
   `config.backend` (`auto|x11|wayland`, env `VOLE_BACKEND`) and the session.
   `setupIO` wires the indicator + injector; `startHotkey` runs the hotkey in a
@@ -157,12 +171,12 @@ type Nop struct{}            // no-op Indicator (tray-only / no display)
 
 . [x] *Abstraction*: `Hotkey`/`Injector`/`Indicator` interfaces + `Mode` + `Detect`;
   X11 code satisfies them; runtime selection. No behavior change on X11.
-. [x] *Wayland injection*: reuse `xdotool` (decided after confirming it reaches
-  native windows on KWin via Xwayland). No ydotool/clipboard fallback.
+. [x] *Wayland injection*: first tried `xdotool type` (garbled Cyrillic via KWin's
+  layout), then switched to clipboard-paste (Klipper + Shift+Insert).
 . [x] *Wayland hotkey*: GlobalShortcuts portal (DBus); two shortcuts, no live Shift.
 . [x] *Wayland overlay*: tray-only. Layer-shell overlay: not done (future).
-. [x] *Packaging*: backend config + docs. Wayland runtime deps are just `xdotool`
-  + Xwayland (no uinput / udev rule needed for the xdotool path).
+. [x] *Packaging*: backend config + docs. Wayland runtime deps: KDE Klipper +
+  `xdotool` (paste keystroke) + Xwayland (no uinput / udev rule needed).
 
 == Testing target
 
@@ -172,14 +186,17 @@ the live session:
 * Active graphical session is *KDE Plasma on Wayland* (seat0 / tty1);
   `kwin_wayland_wrapper --xwayland` running, `Xwayland :0` up.
 * `org.freedesktop.portal.GlobalShortcuts` present on the session portal → PTT works.
-* `xdotool`, `parec`, `glslc`, 64-bit `libvulkan` present → injection + capture work.
+* `xdotool`, `parec`, `glslc`, 64-bit `libvulkan` present; KDE Klipper on the bus
+  (`org.kde.klipper`) → capture, clipboard, and paste keystroke all work.
+  `wl-clipboard` is *not* installed (hence Klipper for the clipboard).
 * Plasma hosts SNI, so the tray works natively.
 * Immutable rootfs, no `go`/`gcc`/`cmake` — deploy the prebuilt release artifact
   (glibc there is newer than the CI runner's, so the binary runs).
-* When launched outside the graphical session (e.g. `systemd --user`), import
-  `DISPLAY`/`XAUTHORITY` so xdotool finds Xwayland.
-* Validate, in order: model loads on RADV → portal shortcut fires PTT → xdotool
-  types into a native Wayland app (check a terminal and Cyrillic) → tray reflects
+* The `systemd --user` manager already exports `DISPLAY`/`WAYLAND_DISPLAY`/
+  `XAUTHORITY`/`DBUS_SESSION_BUS_ADDRESS` (Plasma imports them), so the service
+  inherits what xdotool, Klipper, and the portal need.
+* Validate, in order: model loads on RADV → portal shortcut fires PTT → text is
+  pasted into a native Wayland app (check a terminal and Cyrillic) → tray reflects
   state.
 * For an APU prefer a lighter model (`large-v3-turbo`) over `large-v3`.
 
@@ -187,15 +204,18 @@ the live session:
 
 * *Live Shift on Wayland* → dropped; two separate portal shortcuts
   (`dictate` / `dictate-alt`) instead.
-* *uinput permissions on SteamOS* → moot; injection uses xdotool, not uinput, so
-  no `/dev/uinput` access or udev rule is required.
-* *Injection fallback when a tool is missing* → none. If xdotool can't reach,
-  injection does nothing (by decision: "if it's not there, it's not there").
+* *uinput permissions on SteamOS* → moot; injection uses the clipboard + xdotool
+  paste keystroke, not uinput, so no `/dev/uinput` access or udev rule is required.
+* *How to inject Cyrillic on Wayland* → clipboard-paste (Klipper), since xdotool
+  typing is mangled by KWin's layout (`раз`→`Hfp`, confirmed on ws7).
 * *layer-shell Go binding* → deferred; tray-only for now.
 
 == Known limitations
 
-* No injection on compositors without an XTEST→native bridge (bare wlroots:
-  sway/Hyprland) — the design targets KWin/Plasma.
+* Wayland injection targets KDE/Plasma (clipboard via Klipper + xdotool paste
+  keystroke). On non-KDE Wayland it needs `wl-clipboard` for the clipboard and
+  Xwayland for the keystroke; bare wlroots without Xwayland is unsupported.
+* Clipboard-paste clobbers the clipboard (no save/restore yet) and no single
+  `paste_key` is universal (Shift+Insert vs Ctrl+Shift+V for terminals).
 * No live language switch on Wayland (portal limitation).
 * No floating overlay on Wayland yet (tray reflects state).

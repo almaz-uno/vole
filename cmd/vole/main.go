@@ -18,12 +18,14 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/almaz-uno/vole/internal/audio"
 	"github.com/almaz-uno/vole/internal/config"
 	"github.com/almaz-uno/vole/internal/daemon"
+	"github.com/almaz-uno/vole/internal/inject"
 	"github.com/almaz-uno/vole/internal/models"
 	"github.com/almaz-uno/vole/internal/overlay"
 	"github.com/almaz-uno/vole/internal/whisper"
@@ -65,6 +67,8 @@ func main() {
 		cmdTranscribe(os.Args[2:])
 	case "overlay-test":
 		cmdOverlayTest()
+	case "paste":
+		cmdPaste(os.Args[2:])
 	default:
 		fmt.Fprintf(os.Stderr, "vole: unknown command %q\n", os.Args[1])
 		usage()
@@ -189,6 +193,28 @@ func cmdOverlayTest() {
 	}
 	ov.Hide()
 	time.Sleep(300 * time.Millisecond)
+}
+
+// cmdPaste copies text to the clipboard and pastes it via the configured paste
+// keystroke (the inject=paste path), after a short delay so you can focus the
+// target field. Text comes from the args or stdin. Verification helper.
+func cmdPaste(args []string) {
+	text := strings.TrimRight(strings.Join(args, " "), "\n")
+	if text == "" {
+		b, _ := io.ReadAll(os.Stdin)
+		text = strings.TrimRight(string(b), "\n")
+	}
+	if text == "" {
+		fmt.Fprintln(os.Stderr, "usage: vole paste <text>   (or pipe text on stdin)")
+		os.Exit(1)
+	}
+	p := inject.NewPaste(config.Load().PasteKey, true) // debug helper always pastes
+	const delay = 2 * time.Second
+	fmt.Fprintf(os.Stderr, "focus the target field — pasting in %s…\n", delay)
+	time.Sleep(delay)
+	if err := p.Type(text); err != nil {
+		fatal(err)
+	}
 }
 
 func usage() {

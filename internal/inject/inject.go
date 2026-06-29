@@ -25,6 +25,10 @@ func New() Injector { return Injector{} }
 // Type types text into the active window via xdotool.
 func (Injector) Type(text string) error { return Type(text) }
 
+// Insert is the same as Type for the xdotool injector (it always inserts);
+// it exists so the daemon can force insertion on a history-menu click.
+func (Injector) Insert(text string) error { return Type(text) }
+
 // Type types text into the active window via xdotool.
 // The text is passed over stdin (--file -) to avoid argument-length limits
 // and shell quoting issues with special characters.

@@ -39,6 +39,20 @@ type Injector interface {
 	Type(text string) error
 }
 
+// Inserter is an Injector that can force-insert text even when auto-paste is
+// off — used for explicit actions such as clicking a history entry.
+type Inserter interface {
+	Injector
+	Insert(text string) error
+}
+
+// Copier is an Injector that can put text on the clipboard without pasting —
+// used for tray-click dictation, where the focus is on the tray, not a field.
+type Copier interface {
+	Injector
+	Copy(text string) error
+}
+
 // Indicator is the floating recording/transcribing/download indicator. A
 // backend without a visible overlay (Wayland tray-only) uses Nop.
 type Indicator interface {

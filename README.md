@@ -31,11 +31,11 @@ be inconvenient).
 
 - Linux, X11 or Wayland.
 - `parec` (PulseAudio/PipeWire) for capture.
-- `xdotool` for text injection (on both backends — see [Wayland](#wayland)).
+- `xdotool` (X11: types the text; Wayland: sends the paste keystroke).
 - An SNI tray host for the tray icon (e.g. lxqt-panel; KDE Plasma hosts SNI natively).
 - **X11**: a compositor for overlay transparency.
-- **Wayland**: a GlobalShortcuts portal (KWin/Plasma 5.27+) for push-to-talk, and
-  Xwayland (any KDE/GNOME Wayland session has it) so `xdotool` can inject.
+- **Wayland**: a GlobalShortcuts portal (KWin/Plasma 5.27+) for push-to-talk;
+  KDE Klipper for the clipboard; and Xwayland for the paste keystroke.
 - whisper.cpp built with the Vulkan backend and installed where `pkg-config`
   can find it (`whisper.pc`).
 - ggml models (`ggml-large-v3.bin`, `ggml-silero-v5.1.2.bin` for VAD). vole
@@ -98,13 +98,13 @@ Shortcuts. The `mods`/`key` config seeds a *suggested* trigger: `dictate` gets
 portal reports press/release, so push-to-talk works; it cannot observe a live
 Shift, so the two languages are separate keys rather than a Shift toggle.
 
-**Text injection** stays on `xdotool`. On KWin/Mutter, `xdotool type` reaches the
-focused window — including native Wayland ones — through Xwayland's XTEST bridge,
-and because it types keysyms it produces Cyrillic (and any Unicode) regardless of
-the active layout and works in terminals. This needs Xwayland in the session
-(every KDE/GNOME Wayland session has it). There is **no fallback**: on a
-compositor that does not bridge XTEST to native windows (e.g. bare wlroots —
-sway/Hyprland), injection won't reach native Wayland clients.
+**Text injection** goes through the clipboard. `xdotool type` is *not* usable on
+KWin Wayland: XTEST sends keycodes that KWin re-interprets through the active
+keyboard layout, so dictating Russian under a US layout types transliterated
+Latin. Instead vole puts the text on the clipboard (KDE Klipper over DBus —
+layout-independent, correct for any Unicode) and pastes it with a keystroke
+(`paste_key`, default **Shift+Insert**; terminals may want `ctrl+shift+v`). This
+needs KDE's Klipper (present on Plasma) and Xwayland for the paste keystroke.
 
 The floating cursor overlay is X11-only for now; on Wayland the tray icon
 reflects recording/transcribing state.

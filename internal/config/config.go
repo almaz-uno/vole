@@ -22,10 +22,16 @@ type Hotkey struct {
 type Config struct {
 	Hotkey           Hotkey  `yaml:"hotkey"`
 	SilenceThreshold float64 `yaml:"silence_threshold"`
+	VADThreshold     float64 `yaml:"vad_threshold"` // Silero speech probability [0,1]; lower = catches quieter/whispered speech
 	Model            string  `yaml:"model"`
 	VAD              string  `yaml:"vad"`
 	Socket           string  `yaml:"socket"`
-	Backend          string  `yaml:"backend"` // input/output backend: auto|x11|wayland
+	Backend          string  `yaml:"backend"`      // input/output backend: auto|x11|wayland
+	Inject           string  `yaml:"inject"`       // injection method: auto|type|paste
+	PasteKey         string  `yaml:"paste_key"`    // paste keystroke for inject=paste (xdotool key spec); default Shift+Insert
+	AutoPaste        bool    `yaml:"auto_paste"`   // inject=paste: auto-paste after dictation (false = copy to clipboard only)
+	HistorySize      int     `yaml:"history_size"` // dictations kept in the history / tray menu
+	HistoryFile      string  `yaml:"history_file"` // path to the dictation history (JSONL)
 }
 
 // Defaults returns the default configuration (used when no file is present).
@@ -34,10 +40,15 @@ func Defaults() Config {
 	return Config{
 		Hotkey:           Hotkey{Mods: "Super+Control", Key: "d", Lang: "ru", LangShift: "en"},
 		SilenceThreshold: 0.005,
+		VADThreshold:     0.3,
 		Model:            filepath.Join(home, ".local/share/dictation/whisper.cpp/models/ggml-large-v3.bin"),
 		VAD:              filepath.Join(home, ".local/share/dictation/whisper.cpp/models/ggml-silero-v5.1.2.bin"),
 		Socket:           socketDefault(),
 		Backend:          "auto",
+		Inject:           "paste", // clipboard paste: instant, block insert, layout-independent
+		AutoPaste:        true,
+		HistorySize:      256,
+		HistoryFile:      stateDefault(),
 	}
 }
 
@@ -71,6 +82,7 @@ func Load() Config {
 	c.Model = expandHome(c.Model)
 	c.VAD = expandHome(c.VAD)
 	c.Socket = expandHome(c.Socket)
+	c.HistoryFile = expandHome(c.HistoryFile)
 	return c
 }
 
@@ -79,6 +91,15 @@ func socketDefault() string {
 		return filepath.Join(rt, "vole.sock")
 	}
 	return "/tmp/vole.sock"
+}
+
+// stateDefault is the default dictation-history path under XDG_STATE_HOME.
+func stateDefault() string {
+	state := os.Getenv("XDG_STATE_HOME")
+	if state == "" {
+		state = filepath.Join(os.Getenv("HOME"), ".local", "state")
+	}
+	return filepath.Join(state, "vole", "history.jsonl")
 }
 
 // expandHome expands a leading ~/ to the home directory.

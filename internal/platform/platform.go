@@ -23,6 +23,7 @@ const (
 	ModeRecording
 	ModeProcessing
 	ModeDownloading
+	ModeToast
 )
 
 // Hotkey is the global push-to-talk source. Listen blocks until Close, invoking
@@ -62,6 +63,10 @@ type Indicator interface {
 	SetMode(Mode)
 	ShowDownload(label string)
 	SetProgress(frac float64)
+	// Toast shows a brief, self-dismissing confirmation (e.g. "copied to
+	// clipboard") after a tray-click dictation. A backend without an overlay
+	// (Nop) ignores it; the daemon then falls back to a desktop notification.
+	Toast(text string)
 	Hide()
 	Close()
 }
@@ -101,6 +106,7 @@ func (Nop) SetLang(string)      {}
 func (Nop) SetMode(Mode)        {}
 func (Nop) ShowDownload(string) {}
 func (Nop) SetProgress(float64) {}
+func (Nop) Toast(string)        {}
 func (Nop) Hide()               {}
 func (Nop) Close()              {}
 

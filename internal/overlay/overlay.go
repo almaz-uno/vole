@@ -1,6 +1,8 @@
-// Package overlay is a floating recording indicator near the cursor: a
-// borderless ARGB32 override-redirect window (transparency via the compositor)
-// that draws a rounded panel with a status icon, a VU meter, and a language label.
+// Package overlay is a floating indicator centered near the top of the screen:
+// a borderless ARGB32 override-redirect window (transparency via the compositor)
+// that draws a rounded panel with a status icon, a VU meter, and a language
+// label while recording. After a tray-click dictation it also shows a brief,
+// fading "copied to clipboard" toast in the same place.
 //
 // All rendering goes into an image.NRGBA and is blitted to the window via PutImage.
 // The X11 connection is not thread-safe, so all requests run from the loop goroutine.
@@ -18,6 +20,7 @@ import (
 
 	"github.com/almaz-uno/vole/internal/platform"
 	"github.com/jezek/xgb"
+	"github.com/jezek/xgb/randr"
 	"github.com/jezek/xgb/xproto"
 	"golang.org/x/image/font"
 	"golang.org/x/image/font/opentype"
@@ -33,6 +36,7 @@ const (
 	ModeRecording   = platform.ModeRecording
 	ModeProcessing  = platform.ModeProcessing
 	ModeDownloading = platform.ModeDownloading
+	ModeToast       = platform.ModeToast
 )
 
 var _ platform.Indicator = (*Overlay)(nil)
@@ -42,8 +46,11 @@ const (
 	radius      = 12.0
 	vuSegments  = 12
 	levelGain   = 8.0
-	cursorDX    = 18
-	cursorDY    = 18
+	topMargin   = 48 // px below the top screen edge (the overlay is centered-top)
+	toastH      = 40 // height of the "copied" toast panel
+	toastPad    = 16 // horizontal padding inside the toast
+	toastDur    = 1900 * time.Millisecond
+	toastFade   = 1400 * time.Millisecond // the toast starts fading out after this
 	framePeriod = 33 * time.Millisecond
 )
 
@@ -52,6 +59,7 @@ var (
 	colRec   = color.NRGBA{229, 57, 53, 255}
 	colProc  = color.NRGBA{255, 179, 0, 255}
 	colText  = color.NRGBA{239, 240, 241, 255}
+	colOK    = color.NRGBA{76, 175, 80, 255} // green check mark for the toast
 	colVUoff = color.NRGBA{58, 58, 78, 255}
 	colVUlo  = color.NRGBA{76, 175, 80, 255}
 	colVUmid = color.NRGBA{255, 193, 7, 255}
@@ -66,22 +74,26 @@ var (
 
 // Overlay is the managed indicator. Created with New, released with Close.
 type Overlay struct {
-	conn  *xgb.Conn
-	win   xproto.Window
-	gc    xproto.Gcontext
-	root  xproto.Window
-	depth byte
-	face  font.Face
+	conn             *xgb.Conn
+	win              xproto.Window
+	gc               xproto.Gcontext
+	root             xproto.Window
+	depth            byte
+	face             font.Face
+	screenW, screenH int
+	hasRandr         bool // RandR available → center on the monitor under the cursor
 
 	img *image.NRGBA
 	buf []byte
 
-	mu       sync.Mutex
-	mode     Mode
-	lang     string
-	level    float64
-	progress float64 // download progress [0,1]
-	label    string  // download label (model name)
+	mu        sync.Mutex
+	mode      Mode
+	lang      string
+	level     float64
+	progress  float64 // download progress [0,1]
+	label     string  // download label (model name)
+	toastText string  // toast text (ModeToast)
+	toastAt   time.Time
 
 	cmd  chan func()
 	quit chan struct{}
@@ -130,6 +142,8 @@ func New() (*Overlay, error) {
 
 	o := &Overlay{
 		conn: conn, win: win, gc: gc, root: screen.Root, depth: depth,
+		screenW: int(screen.WidthInPixels), screenH: int(screen.HeightInPixels),
+		hasRandr: randr.Init(conn) == nil, // for per-monitor centering on a multi-head X screen
 		img:  image.NewNRGBA(image.Rect(0, 0, winW, winH)),
 		buf:  make([]byte, winW*winH*4),
 		cmd:  make(chan func(), 8),
@@ -170,9 +184,17 @@ func (o *Overlay) loop() {
 			f()
 		case <-tick.C:
 			o.mu.Lock()
-			visible := o.mode != ModeHidden
+			mode, at := o.mode, o.toastAt
 			o.mu.Unlock()
-			if visible {
+			switch {
+			case mode == ModeHidden:
+				// nothing to draw
+			case mode == ModeToast && time.Since(at) >= toastDur:
+				o.mu.Lock()
+				o.mode = ModeHidden
+				o.mu.Unlock()
+				xproto.UnmapWindow(o.conn, o.win)
+			default:
 				o.draw()
 			}
 		case <-o.quit:
@@ -181,20 +203,14 @@ func (o *Overlay) loop() {
 	}
 }
 
-// Show displays the indicator near the cursor in recording mode.
+// Show displays the indicator (centered-top) in recording mode.
 func (o *Overlay) Show(lang string) {
 	o.mu.Lock()
 	o.mode = ModeRecording
 	o.lang = lang
 	o.level = 0
 	o.mu.Unlock()
-	o.cmd <- func() {
-		o.positionAtCursor()
-		xproto.MapWindow(o.conn, o.win)
-		xproto.ConfigureWindow(o.conn, o.win,
-			xproto.ConfigWindowStackMode, []uint32{xproto.StackModeAbove})
-		o.draw()
-	}
+	o.cmd <- func() { o.show(winW, winH) }
 }
 
 // SetLevel updates the signal level [0,1] for the VU meter.
@@ -218,13 +234,7 @@ func (o *Overlay) ShowDownload(label string) {
 	o.label = label
 	o.progress = 0
 	o.mu.Unlock()
-	o.cmd <- func() {
-		o.positionAtCursor()
-		xproto.MapWindow(o.conn, o.win)
-		xproto.ConfigureWindow(o.conn, o.win,
-			xproto.ConfigWindowStackMode, []uint32{xproto.StackModeAbove})
-		o.draw()
-	}
+	o.cmd <- func() { o.show(winW, winH) }
 }
 
 // SetProgress updates the download progress [0,1].
@@ -239,6 +249,20 @@ func (o *Overlay) SetMode(m Mode) {
 	o.mu.Lock()
 	o.mode = m
 	o.mu.Unlock()
+}
+
+// Toast shows a brief, fading "copied to clipboard" confirmation centered-top.
+// It dismisses itself after toastDur (see loop).
+func (o *Overlay) Toast(text string) {
+	o.mu.Lock()
+	o.mode = ModeToast
+	o.toastText = text
+	o.toastAt = time.Now()
+	o.mu.Unlock()
+	o.cmd <- func() {
+		w, h := o.toastSize(text)
+		o.show(w, h)
+	}
 }
 
 // Hide hides the indicator.
@@ -256,32 +280,114 @@ func (o *Overlay) Close() {
 	o.conn.Close()
 }
 
-func (o *Overlay) positionAtCursor() {
-	reply, err := xproto.QueryPointer(o.conn, o.root).Reply()
-	if err != nil {
+// show resizes the backing image/window to w×h, centers it near the top of the
+// screen, maps it above other windows, and draws the current state. Runs on the
+// loop goroutine (it touches conn and img/buf).
+func (o *Overlay) show(w, h int) {
+	o.resizeBuf(w, h)
+	mx, my, mw, _ := o.currentMonitor()
+	x := mx + (mw-w)/2
+	if x < mx {
+		x = mx
+	}
+	y := my + topMargin
+	xproto.ConfigureWindow(o.conn, o.win,
+		xproto.ConfigWindowX|xproto.ConfigWindowY|xproto.ConfigWindowWidth|xproto.ConfigWindowHeight,
+		[]uint32{uint32(x), uint32(y), uint32(w), uint32(h)})
+	xproto.MapWindow(o.conn, o.win)
+	xproto.ConfigureWindow(o.conn, o.win,
+		xproto.ConfigWindowStackMode, []uint32{xproto.StackModeAbove})
+	o.draw()
+}
+
+// currentMonitor returns the geometry of the monitor under the mouse pointer —
+// the X "screen" can span several physical monitors, so centering on its full
+// width lands the overlay on the seam between them. Falls back to the primary
+// monitor, then to the whole virtual screen.
+func (o *Overlay) currentMonitor() (x, y, w, h int) {
+	x, y, w, h = 0, 0, o.screenW, o.screenH
+	if !o.hasRandr {
 		return
 	}
-	xproto.ConfigureWindow(o.conn, o.win,
-		xproto.ConfigWindowX|xproto.ConfigWindowY,
-		[]uint32{uint32(int(reply.RootX) + cursorDX), uint32(int(reply.RootY) + cursorDY)})
+	rep, err := randr.GetMonitors(o.conn, o.root, true).Reply()
+	if err != nil || len(rep.Monitors) == 0 {
+		return
+	}
+	px, py := -1, -1
+	if p, err := xproto.QueryPointer(o.conn, o.root).Reply(); err == nil {
+		px, py = int(p.RootX), int(p.RootY)
+	}
+	var primary *randr.MonitorInfo
+	for i := range rep.Monitors {
+		m := &rep.Monitors[i]
+		if int(m.X) <= px && px < int(m.X)+int(m.Width) &&
+			int(m.Y) <= py && py < int(m.Y)+int(m.Height) {
+			return int(m.X), int(m.Y), int(m.Width), int(m.Height)
+		}
+		if m.Primary {
+			primary = m
+		}
+	}
+	if primary != nil {
+		return int(primary.X), int(primary.Y), int(primary.Width), int(primary.Height)
+	}
+	m := &rep.Monitors[0]
+	return int(m.X), int(m.Y), int(m.Width), int(m.Height)
+}
+
+// resizeBuf reallocates the backing image/buffer when the panel size changes.
+// Called only from the loop goroutine, which owns img/buf.
+func (o *Overlay) resizeBuf(w, h int) {
+	if o.img.Rect.Dx() == w && o.img.Rect.Dy() == h {
+		return
+	}
+	o.img = image.NewNRGBA(image.Rect(0, 0, w, h))
+	o.buf = make([]byte, w*h*4)
+}
+
+// toastSize measures the toast panel for text (loop goroutine: it uses the face).
+func (o *Overlay) toastSize(text string) (int, int) {
+	if o.face == nil {
+		return winW, toastH
+	}
+	tw := font.MeasureString(o.face, "✓  "+text).Round()
+	return tw + 2*toastPad, toastH
 }
 
 func (o *Overlay) draw() {
 	o.mu.Lock()
 	mode, lang, level, progress, label := o.mode, o.lang, o.level, o.progress, o.label
+	toastText, toastAt := o.toastText, o.toastAt
 	o.mu.Unlock()
 
+	w, h := o.img.Rect.Dx(), o.img.Rect.Dy()
 	clear(o.img.Pix) // transparent canvas
 
-	// rounded backdrop
-	fillRoundRect(o.img, 0, 0, winW, winH, radius, colBG)
+	// the toast fades its whole panel out over its last stretch
+	fade := 1.0
+	if mode == ModeToast {
+		if el := time.Since(toastAt); el > toastFade {
+			fade = clamp(1-float64(el-toastFade)/float64(toastDur-toastFade), 0, 1)
+		}
+	}
+	bg := colBG
+	bg.A = uint8(float64(bg.A) * fade)
+	fillRoundRect(o.img, 0, 0, w, h, radius, bg)
 
-	if mode == ModeDownloading {
+	switch mode {
+	case ModeDownloading:
 		o.drawDownload(label, progress)
-		o.flush()
-		return
+	case ModeToast:
+		o.drawToast(w, h, toastText, fade)
+	default: // recording / processing
+		o.drawRecording(lang, level, mode)
 	}
 
+	o.flush()
+}
+
+// drawRecording renders the status icon, the VU meter, and the language label.
+func (o *Overlay) drawRecording(lang string, level float64, mode Mode) {
 	// status icon on the left
 	icon := colRec
 	if mode == ModeProcessing {
@@ -315,8 +421,31 @@ func (o *Overlay) draw() {
 		}
 		d.DrawString(strings.ToUpper(lang))
 	}
+}
 
-	o.flush()
+// drawToast renders a green check mark and the confirmation text, faded by [0,1].
+func (o *Overlay) drawToast(w, h int, text string, fade float64) {
+	ok := colOK
+	ok.A = uint8(float64(ok.A) * fade)
+	tx := colText
+	tx.A = uint8(float64(tx.A) * fade)
+	if o.face == nil {
+		fillCircle(o.img, w/2, h/2, 8, ok)
+		return
+	}
+	m := o.face.Metrics()
+	baseY := (h-m.Height.Ceil())/2 + m.Ascent.Ceil()
+	dc := font.Drawer{
+		Dst: o.img, Src: image.NewUniform(ok), Face: o.face,
+		Dot: fixed.P(toastPad, baseY),
+	}
+	dc.DrawString("✓")
+	adv := font.MeasureString(o.face, "✓  ").Round()
+	dt := font.Drawer{
+		Dst: o.img, Src: image.NewUniform(tx), Face: o.face,
+		Dot: fixed.P(toastPad+adv, baseY),
+	}
+	dt.DrawString(text)
 }
 
 // drawDownload renders the model name and a progress bar.
@@ -346,6 +475,7 @@ func (o *Overlay) drawDownload(label string, progress float64) {
 
 // flush: NRGBA → premultiplied BGRA, then PutImage to the window.
 func (o *Overlay) flush() {
+	w, h := o.img.Rect.Dx(), o.img.Rect.Dy()
 	src := o.img.Pix
 	for i := 0; i < len(src); i += 4 {
 		r, g, b, a := uint32(src[i]), uint32(src[i+1]), uint32(src[i+2]), uint32(src[i+3])
@@ -355,13 +485,13 @@ func (o *Overlay) flush() {
 		o.buf[i+3] = byte(a)           // A
 	}
 	xproto.PutImage(o.conn, xproto.ImageFormatZPixmap, xproto.Drawable(o.win), o.gc,
-		winW, winH, 0, 0, 0, o.depth, o.buf)
+		uint16(w), uint16(h), 0, 0, 0, o.depth, o.buf)
 }
 
 // --- drawing primitives with edge antialiasing ---
 
 func blend(img *image.NRGBA, x, y int, c color.NRGBA, cov float64) {
-	if x < 0 || y < 0 || x >= winW || y >= winH || cov <= 0 {
+	if x < 0 || y < 0 || x >= img.Rect.Dx() || y >= img.Rect.Dy() || cov <= 0 {
 		return
 	}
 	i := img.PixOffset(x, y)

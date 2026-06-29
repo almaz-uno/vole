@@ -323,7 +323,12 @@ func (d *Daemon) stop(lang string) string {
 	if c, ok := d.inj.(platform.Copier); ok && byClick {
 		injErr = c.Copy(text)
 		if injErr == nil {
-			notify("📋 vole", "скопировано в буфер") // tray-click feedback
+			// visual feedback: the overlay toast on X11, a desktop
+			// notification where there is no overlay (Wayland tray-only).
+			d.ind.Toast("Copied to clipboard")
+			if _, nop := d.ind.(platform.Nop); nop {
+				notify("📋 vole", "Copied to clipboard")
+			}
 		}
 	} else {
 		injErr = d.inj.Type(text)

@@ -91,8 +91,8 @@ func (d *Daemon) startHotkey(backend platform.Backend) {
 	d.mu.Unlock()
 
 	hk.Listen(
-		func(lang string) { d.start(lang) },   // PTT press
-		func(lang string) { d.setLang(lang) }, // live Shift (X11 only)
-		func(lang string) { d.stop(lang) },    // release (final language)
+		func(lang string) { d.start(lang, false) }, // PTT press
+		func(lang string) { d.setLang(lang) },      // live Shift (X11 only)
+		func(lang string) { d.stop(lang) },         // release (final language)
 	)
 }

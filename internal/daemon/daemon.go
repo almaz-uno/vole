@@ -15,6 +15,7 @@ import (
 
 	"github.com/almaz-uno/vole/internal/audio"
 	"github.com/almaz-uno/vole/internal/config"
+	"github.com/almaz-uno/vole/internal/history"
 	"github.com/almaz-uno/vole/internal/models"
 	"github.com/almaz-uno/vole/internal/platform"
 	"github.com/almaz-uno/vole/internal/tray"
@@ -30,6 +31,7 @@ type Daemon struct {
 	mu        sync.Mutex
 	rec       *audio.Recorder
 	recording bool
+	byClick   bool // current recording was started by a tray click (→ clipboard only)
 	enabled   bool
 	lang      string
 
@@ -40,7 +42,8 @@ type Daemon struct {
 	inj       platform.Injector  // text injection backend; never nil
 	hk        platform.Hotkey    // PTT source; nil if unavailable
 	tr        *tray.Tray
-	levelStop chan struct{} // stops the goroutine feeding the level to the indicator
+	hist      *history.Store // recent dictations (tray menu + persisted file)
+	levelStop chan struct{}  // stops the goroutine feeding the level to the indicator
 }
 
 // Run starts the daemon. If the socket is already served, it exits quietly
@@ -69,8 +72,19 @@ func Run() error {
 	d.setupIO(backend)
 	defer d.ind.Close()
 
-	// system-tray icon: state by color, toggle on/off, quit
-	d.tr = tray.Run(d.toggleEnabled, func() { os.Exit(0) })
+	// dictation history (persisted) feeding the tray's "recent dictations" menu
+	d.hist = history.New(cfg.HistoryFile, cfg.HistorySize)
+
+	// system-tray icon: left-click = start/stop recording, right-click = menu
+	// (recent dictations, enable/disable, quit)
+	d.tr = tray.Run(d.toggleEnabled, func() { os.Exit(0) }, d.toggleRecording, d.pasteHistory, cfg.HistorySize)
+	d.hist.OnChange(func(entries []history.Entry) {
+		texts := make([]string, len(entries))
+		for i, e := range entries {
+			texts[i] = e.Text
+		}
+		d.tr.SetHistory(texts)
+	})
 
 	// global PTT hotkey, asynchronously (the Wayland portal handshake may block)
 	go d.startHotkey(backend)
@@ -126,7 +140,7 @@ func (d *Daemon) handle(conn net.Conn) {
 		if arg == "" {
 			arg = "ru"
 		}
-		d.start(arg)
+		d.start(arg, false)
 		fmt.Fprint(conn, "OK")
 	case "STOP":
 		fmt.Fprint(conn, d.stop("")) // language from the current state
@@ -137,7 +151,20 @@ func (d *Daemon) handle(conn net.Conn) {
 	}
 }
 
-func (d *Daemon) start(lang string) {
+// toggleRecording starts or stops recording from a tray left-click. The result
+// goes to the clipboard only (the focus is on the tray, not a text field).
+func (d *Daemon) toggleRecording() {
+	d.mu.Lock()
+	rec := d.recording
+	d.mu.Unlock()
+	if rec {
+		d.stop("")
+	} else {
+		d.start(d.cfg.Hotkey.Lang, true)
+	}
+}
+
+func (d *Daemon) start(lang string, byClick bool) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if !d.enabled || d.recording {
@@ -149,6 +176,7 @@ func (d *Daemon) start(lang string) {
 	}
 	d.lang = lang
 	d.recording = true
+	d.byClick = byClick
 
 	d.ind.Show(lang)
 	d.levelStop = make(chan struct{})
@@ -250,6 +278,7 @@ func (d *Daemon) stop(lang string) string {
 	samples := d.rec.Stop()
 	peak := d.rec.Peak()
 	d.recording = false
+	byClick := d.byClick // tray-click dictation → clipboard only
 	if lang != "" {
 		d.lang = lang
 	}
@@ -287,10 +316,45 @@ func (d *Daemon) stop(lang string) string {
 	}
 	fmt.Fprintf(os.Stderr, "[vole] %s | audio %.1fs | transcribed in %.2fs | peak=%.3f | %q\n",
 		d.lang, audioSec, dur.Seconds(), peak, text)
-	if err := d.inj.Type(text); err != nil {
-		fmt.Fprintln(os.Stderr, "vole daemon: inject:", err)
+	d.hist.Add(text) // record the dictation (tray menu + history file)
+	// tray-click dictation only copies to the clipboard (focus is on the tray);
+	// PTT / socket dictation injects into the focused window.
+	var injErr error
+	if c, ok := d.inj.(platform.Copier); ok && byClick {
+		injErr = c.Copy(text)
+		if injErr == nil {
+			notify("📋 vole", "скопировано в буфер") // tray-click feedback
+		}
+	} else {
+		injErr = d.inj.Type(text)
+	}
+	if injErr != nil {
+		fmt.Fprintln(os.Stderr, "vole daemon: inject:", injErr)
 	}
 	return text
+}
+
+// pasteHistory inserts the recent dictation at idx (clicked in the tray menu)
+// into the focused window, always inserting regardless of the auto-paste setting.
+func (d *Daemon) pasteHistory(idx int) {
+	if d.hist == nil {
+		return
+	}
+	items := d.hist.Items()
+	if idx < 0 || idx >= len(items) {
+		return
+	}
+	text := items[idx].Text
+	time.Sleep(250 * time.Millisecond) // let the tray menu close and focus return
+	var err error
+	if ins, ok := d.inj.(platform.Inserter); ok {
+		err = ins.Insert(text)
+	} else {
+		err = d.inj.Type(text)
+	}
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "vole daemon: paste history:", err)
+	}
 }
 
 func notify(title, body string) {

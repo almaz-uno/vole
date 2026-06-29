@@ -161,7 +161,7 @@ func cmdTranscribe(args []string) {
 		fatal(err)
 	}
 	cfg := config.Load()
-	ctx, err := whisper.New(cfg.Model, true, cfg.VAD)
+	ctx, err := whisper.New(cfg.Model, true, cfg.VAD, cfg.VADThreshold)
 	if err != nil {
 		fatal(err)
 	}

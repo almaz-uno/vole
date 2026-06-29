@@ -17,8 +17,9 @@ import (
 
 // Context is a whisper model loaded into memory (VRAM when useGPU is set).
 type Context struct {
-	ctx     *C.struct_whisper_context
-	vadPath string // path to the Silero VAD model ("" disables VAD)
+	ctx          *C.struct_whisper_context
+	vadPath      string  // path to the Silero VAD model ("" disables VAD)
+	vadThreshold float64 // speech probability threshold; <=0 keeps the whisper default
 }
 
 func cbool(b bool) C._Bool {
@@ -28,9 +29,11 @@ func cbool(b bool) C._Bool {
 	return C._Bool(false)
 }
 
-// New loads a ggml model. useGPU=true enables the Vulkan backend.
-// vadPath is the path to the Silero VAD model ("" disables VAD).
-func New(modelPath string, useGPU bool, vadPath string) (*Context, error) {
+// New loads a ggml model. useGPU=true enables the Vulkan backend. vadPath is the
+// path to the Silero VAD model ("" disables VAD). vadThreshold is the speech
+// probability threshold (<=0 keeps whisper's default of 0.5); lower values catch
+// quieter/whispered speech.
+func New(modelPath string, useGPU bool, vadPath string, vadThreshold float64) (*Context, error) {
 	cpath := C.CString(modelPath)
 	defer C.free(unsafe.Pointer(cpath))
 
@@ -41,7 +44,7 @@ func New(modelPath string, useGPU bool, vadPath string) (*Context, error) {
 	if ctx == nil {
 		return nil, fmt.Errorf("whisper: failed to load model %q", modelPath)
 	}
-	return &Context{ctx: ctx, vadPath: vadPath}, nil
+	return &Context{ctx: ctx, vadPath: vadPath, vadThreshold: vadThreshold}, nil
 }
 
 // Close frees the model and its VRAM.
@@ -86,7 +89,11 @@ func (c *Context) Transcribe(samples []float32, lang string, threads int) (strin
 		defer C.free(unsafe.Pointer(cvad))
 		params.vad = cbool(true)
 		params.vad_model_path = cvad
-		params.vad_params = C.whisper_vad_default_params()
+		vp := C.whisper_vad_default_params()
+		if c.vadThreshold > 0 {
+			vp.threshold = C.float(c.vadThreshold) // lower = catches quieter speech
+		}
+		params.vad_params = vp
 	}
 
 	ret := C.whisper_full(

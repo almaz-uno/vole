@@ -90,7 +90,7 @@ func Run() error {
 			notify("🎤 vole", "model download failed")
 			os.Exit(1)
 		}
-		ctx, err := whisper.New(cfg.Model, true, cfg.VAD)
+		ctx, err := whisper.New(cfg.Model, true, cfg.VAD, cfg.VADThreshold)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "vole daemon:", err)
 			notify("🎤 vole", "model loading failed")

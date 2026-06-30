@@ -54,6 +54,16 @@ type Copier interface {
 	Copy(text string) error
 }
 
+// AutoPaster is an Injector whose auto-paste (paste after dictation) can be
+// flipped at runtime — backs the tray "Auto-paste" checkbox. While off, a
+// dictation only lands on the clipboard instead of being pasted. The toggle is
+// in-memory: it resets to the configured auto_paste on daemon restart.
+type AutoPaster interface {
+	Injector
+	AutoPaste() bool
+	SetAutoPaste(bool)
+}
+
 // Indicator is the floating recording/transcribing/download indicator. A
 // backend without a visible overlay (Wayland tray-only) uses Nop.
 type Indicator interface {

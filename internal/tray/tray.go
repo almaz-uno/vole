@@ -36,6 +36,7 @@ var (
 type Tray struct {
 	disabled, idle, rec, proc []byte
 	mToggle                   *systray.MenuItem
+	mAutoPaste                *systray.MenuItem // "Auto-paste" checkbox; nil if not applicable
 
 	onHistory func(idx int) // invoked with the index of a clicked history entry
 
@@ -47,9 +48,11 @@ type Tray struct {
 // Run starts the tray icon in a goroutine. onToggle toggles dictation; onQuit
 // runs on "Quit"; onTap runs on a left-click of the icon (start/stop recording);
 // onHistory(idx) runs when the user clicks recent-dictation idx. historySize is
-// the number of history slots in the menu. The returned Tray can be updated
-// immediately, before the tray host is ready.
-func Run(onToggle, onQuit, onTap func(), onHistory func(idx int), historySize int) *Tray {
+// the number of history slots in the menu. onAutoPaste, if non-nil, adds an
+// "Auto-paste" checkbox (initial state autoPasteOn) that runs it on each click;
+// pass nil to omit the item (e.g. the non-paste injector). The returned Tray can
+// be updated immediately, before the tray host is ready.
+func Run(onToggle, onQuit, onTap func(), onHistory func(idx int), historySize int, onAutoPaste func(), autoPasteOn bool) *Tray {
 	t := &Tray{
 		disabled:  pngCircle(colDisabled),
 		idle:      pngCircle(colIdle),
@@ -73,12 +76,22 @@ func Run(onToggle, onQuit, onTap func(), onHistory func(idx int), historySize in
 		// controls first, set off by a separator, so they stay reachable above a
 		// long history list
 		t.mToggle = systray.AddMenuItem("Disable dictation", "Pause/resume push-to-talk")
+		var autoPasteCh <-chan struct{}
+		if onAutoPaste != nil {
+			t.mAutoPaste = systray.AddMenuItemCheckbox("Auto-paste",
+				"Paste after dictation (off: only copy to the clipboard)", autoPasteOn)
+			autoPasteCh = t.mAutoPaste.ClickedCh
+		}
 		mQuit := systray.AddMenuItem("Quit", "Stop vole")
 		go func() {
 			for {
 				select {
 				case <-t.mToggle.ClickedCh:
 					onToggle()
+				case <-autoPasteCh: // nil when omitted: this case never fires
+					if onAutoPaste != nil {
+						onAutoPaste()
+					}
 				case <-mQuit.ClickedCh:
 					systray.Quit()
 					return
@@ -161,6 +174,18 @@ func (t *Tray) SetEnabled(enabled bool) {
 		systray.SetIcon(t.idle)
 	} else {
 		systray.SetIcon(t.disabled)
+	}
+}
+
+// SetAutoPaste reflects the auto-paste toggle state in the menu checkbox.
+func (t *Tray) SetAutoPaste(on bool) {
+	if t.mAutoPaste == nil {
+		return
+	}
+	if on {
+		t.mAutoPaste.Check()
+	} else {
+		t.mAutoPaste.Uncheck()
 	}
 }
 

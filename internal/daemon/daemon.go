@@ -76,8 +76,13 @@ func Run() error {
 	d.hist = history.New(cfg.HistoryFile, cfg.HistorySize)
 
 	// system-tray icon: left-click = start/stop recording, right-click = menu
-	// (recent dictations, enable/disable, quit)
-	d.tr = tray.Run(d.toggleEnabled, func() { os.Exit(0) }, d.toggleRecording, d.pasteHistory, cfg.HistorySize)
+	// (recent dictations, enable/disable, auto-paste, quit). The auto-paste
+	// checkbox only applies to the clipboard-paste injector.
+	var onAutoPaste func()
+	if _, ok := d.inj.(platform.AutoPaster); ok {
+		onAutoPaste = d.toggleAutoPaste
+	}
+	d.tr = tray.Run(d.toggleEnabled, func() { os.Exit(0) }, d.toggleRecording, d.pasteHistory, cfg.HistorySize, onAutoPaste, cfg.AutoPaste)
 	d.hist.OnChange(func(entries []history.Entry) {
 		texts := make([]string, len(entries))
 		for i, e := range entries {
@@ -243,6 +248,26 @@ func (d *Daemon) toggleEnabled() {
 	}
 }
 
+// toggleAutoPaste flips auto-paste at runtime (via the tray checkbox): while off,
+// a dictation only lands on the clipboard instead of being pasted. In-memory —
+// it resets to the configured auto_paste on restart.
+func (d *Daemon) toggleAutoPaste() {
+	ap, ok := d.inj.(platform.AutoPaster)
+	if !ok {
+		return
+	}
+	on := !ap.AutoPaste()
+	ap.SetAutoPaste(on)
+	if d.tr != nil {
+		d.tr.SetAutoPaste(on)
+	}
+	if on {
+		notify("🎤 vole", "auto-paste on")
+	} else {
+		notify("📋 vole", "auto-paste off — dictation copies to the clipboard")
+	}
+}
+
 // setLang changes the language of the current recording (live Shift) and the overlay label.
 func (d *Daemon) setLang(lang string) {
 	d.mu.Lock()
@@ -318,25 +343,34 @@ func (d *Daemon) stop(lang string) string {
 		d.lang, audioSec, dur.Seconds(), peak, text)
 	d.hist.Add(text) // record the dictation (tray menu + history file)
 	// tray-click dictation only copies to the clipboard (focus is on the tray);
-	// PTT / socket dictation injects into the focused window.
+	// PTT / socket dictation injects into the focused window — unless auto-paste
+	// is toggled off, when Type() itself only copies (we then confirm it too).
 	var injErr error
 	if c, ok := d.inj.(platform.Copier); ok && byClick {
 		injErr = c.Copy(text)
 		if injErr == nil {
-			// visual feedback: the overlay toast on X11, a desktop
-			// notification where there is no overlay (Wayland tray-only).
-			d.ind.Toast("Copied to clipboard")
-			if _, nop := d.ind.(platform.Nop); nop {
-				notify("📋 vole", "Copied to clipboard")
-			}
+			d.confirmCopied()
 		}
 	} else {
 		injErr = d.inj.Type(text)
+		if ap, ok := d.inj.(platform.AutoPaster); ok && !ap.AutoPaste() && injErr == nil {
+			d.confirmCopied()
+		}
 	}
 	if injErr != nil {
 		fmt.Fprintln(os.Stderr, "vole daemon: inject:", injErr)
 	}
 	return text
+}
+
+// confirmCopied gives feedback that text landed on the clipboard without being
+// pasted (tray-click dictation, or PTT with auto-paste off): an overlay toast on
+// X11, a desktop notification where there is no overlay (Wayland tray-only).
+func (d *Daemon) confirmCopied() {
+	d.ind.Toast("Copied to clipboard")
+	if _, nop := d.ind.(platform.Nop); nop {
+		notify("📋 vole", "Copied to clipboard")
+	}
 }
 
 // pasteHistory inserts the recent dictation at idx (clicked in the tray menu)

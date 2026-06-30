@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/almaz-uno/vole/internal/platform"
@@ -32,17 +33,20 @@ const ownDeadline = 500 * time.Millisecond
 // VTE/xterm terminals). Without PRIMARY a Shift+Insert into a terminal would
 // re-insert the last mouse selection instead of the dictated text.
 type Paster struct {
-	setClip    func(text string) error  // set CLIPBOARD
-	setPrimary func(text string) error  // set PRIMARY (nil if the backend can't)
-	getClip    func() (string, error)   // read CLIPBOARD back (nil if unreadable)
-	getPrimary func() (string, error)   // read PRIMARY back (nil if unreadable)
+	setClip    func(text string) error // set CLIPBOARD
+	setPrimary func(text string) error // set PRIMARY (nil if the backend can't)
+	getClip    func() (string, error)  // read CLIPBOARD back (nil if unreadable)
+	getPrimary func() (string, error)  // read PRIMARY back (nil if unreadable)
 	clipName   string
 	pasteKey   string
-	autoPaste  bool       // Type() also sends the paste keystroke; false = clipboard only
-	conn       *dbus.Conn // kept alive for Klipper; nil otherwise
+	autoPaste  atomic.Bool // Type() also sends the paste keystroke; false = clipboard only (live: tray toggle)
+	conn       *dbus.Conn  // kept alive for Klipper; nil otherwise
 }
 
-var _ platform.Injector = (*Paster)(nil)
+var (
+	_ platform.Injector   = (*Paster)(nil)
+	_ platform.AutoPaster = (*Paster)(nil)
+)
 
 // NewPaste detects a clipboard backend and returns a paste injector. pasteKey is
 // the xdotool key spec to paste (empty = default Shift+Insert). autoPaste makes
@@ -52,7 +56,8 @@ func NewPaste(pasteKey string, autoPaste bool) *Paster {
 	if pasteKey == "" {
 		pasteKey = defaultPasteKey
 	}
-	p := &Paster{pasteKey: pasteKey, autoPaste: autoPaste}
+	p := &Paster{pasteKey: pasteKey}
+	p.autoPaste.Store(autoPaste)
 	p.detectClipboard()
 	if p.setClip == nil {
 		fmt.Fprintln(os.Stderr, "[vole] inject(paste): no clipboard backend found "+
@@ -169,8 +174,14 @@ func cliGetter(bin string, args []string) func() (string, error) {
 // Type puts text on the clipboard and, if autoPaste is set, pastes it into the
 // focused window. With autoPaste off it only sets the clipboard.
 func (p *Paster) Type(text string) error {
-	return p.put(text, p.autoPaste)
+	return p.put(text, p.autoPaste.Load())
 }
+
+// AutoPaste reports whether Type() pastes after copying (vs. clipboard only).
+func (p *Paster) AutoPaste() bool { return p.autoPaste.Load() }
+
+// SetAutoPaste flips the auto-paste behavior at runtime (tray toggle).
+func (p *Paster) SetAutoPaste(v bool) { p.autoPaste.Store(v) }
 
 // Insert always pastes (used for explicit actions like a history-menu click,
 // regardless of the autoPaste setting).

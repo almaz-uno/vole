@@ -59,3 +59,11 @@ vad: ~/.local/share/dictation/whisper.cpp/models/ggml-silero-v5.1.2.bin
 
 # Daemon unix socket (defaults to $XDG_RUNTIME_DIR/vole.sock).
 # socket: /run/user/1000/vole.sock
+
+# Debug: dump the raw captured audio of each dictation as a WAV beside this path
+# (16 kHz mono, before silence/VAD/transcription). Files are timestamped siblings,
+# e.g. record-20260630-131815.007.wav. Empty = off. Env: VOLE_RECORD. Useful for
+# inspecting dropped or misheard recordings.
+# debug_record: ~/.local/state/vole/record.wav
+# How many recent raw recordings to keep (older ones are pruned). Default 3.
+# debug_record_keep: 3

@@ -26,12 +26,14 @@ type Config struct {
 	Model            string  `yaml:"model"`
 	VAD              string  `yaml:"vad"`
 	Socket           string  `yaml:"socket"`
-	Backend          string  `yaml:"backend"`      // input/output backend: auto|x11|wayland
-	Inject           string  `yaml:"inject"`       // injection method: auto|type|paste
-	PasteKey         string  `yaml:"paste_key"`    // paste keystroke for inject=paste (xdotool key spec); default Shift+Insert
-	AutoPaste        bool    `yaml:"auto_paste"`   // inject=paste: auto-paste after dictation (false = copy to clipboard only)
-	HistorySize      int     `yaml:"history_size"` // dictations kept in the history / tray menu
-	HistoryFile      string  `yaml:"history_file"` // path to the dictation history (JSONL)
+	Backend          string  `yaml:"backend"`           // input/output backend: auto|x11|wayland
+	Inject           string  `yaml:"inject"`            // injection method: auto|type|paste
+	PasteKey         string  `yaml:"paste_key"`         // paste keystroke for inject=paste (xdotool key spec); default Shift+Insert
+	AutoPaste        bool    `yaml:"auto_paste"`        // inject=paste: auto-paste after dictation (false = copy to clipboard only)
+	HistorySize      int     `yaml:"history_size"`      // dictations kept in the history / tray menu
+	HistoryFile      string  `yaml:"history_file"`      // path to the dictation history (JSONL)
+	DebugRecord      string  `yaml:"debug_record"`      // debug: dump raw recordings near this WAV path (empty = off)
+	DebugRecordKeep  int     `yaml:"debug_record_keep"` // debug: how many recent raw recordings to retain (min 1)
 }
 
 // Defaults returns the default configuration (used when no file is present).
@@ -49,6 +51,7 @@ func Defaults() Config {
 		AutoPaste:        true,
 		HistorySize:      256,
 		HistoryFile:      stateDefault(),
+		DebugRecordKeep:  3,
 	}
 }
 
@@ -79,10 +82,14 @@ func Load() Config {
 	if v := os.Getenv("VOLE_BACKEND"); v != "" {
 		c.Backend = v
 	}
+	if v := os.Getenv("VOLE_RECORD"); v != "" {
+		c.DebugRecord = v
+	}
 	c.Model = expandHome(c.Model)
 	c.VAD = expandHome(c.VAD)
 	c.Socket = expandHome(c.Socket)
 	c.HistoryFile = expandHome(c.HistoryFile)
+	c.DebugRecord = expandHome(c.DebugRecord)
 	return c
 }
 

@@ -2,9 +2,12 @@
 package audio
 
 import (
+	"bytes"
 	"encoding/binary"
 	"fmt"
+	"math"
 	"os"
+	"path/filepath"
 )
 
 // ReadWAV16 reads a 16-bit PCM WAV (expected 16 kHz mono) and returns the
@@ -33,6 +36,45 @@ func ReadWAV16(path string) ([]float32, error) {
 		pos = body + size + (size & 1) // chunks are word-aligned
 	}
 	return nil, fmt.Errorf("audio: no data chunk found in %q", path)
+}
+
+// WriteWAV16 writes samples to a 16-bit PCM mono WAV at SampleRate — the inverse
+// of ReadWAV16, used to dump the raw captured audio for debugging. It creates the
+// parent directory if needed.
+func WriteWAV16(path string, samples []float32) error {
+	pcm := make([]byte, len(samples)*2)
+	for i, f := range samples {
+		v := int32(math.Round(float64(f) * 32768))
+		if v > 32767 {
+			v = 32767
+		} else if v < -32768 {
+			v = -32768
+		}
+		binary.LittleEndian.PutUint16(pcm[i*2:], uint16(int16(v)))
+	}
+
+	var buf bytes.Buffer
+	const channels, bits = 1, 16
+	byteRate := SampleRate * channels * bits / 8
+	buf.WriteString("RIFF")
+	binary.Write(&buf, binary.LittleEndian, uint32(36+len(pcm))) // RIFF chunk size
+	buf.WriteString("WAVE")
+	buf.WriteString("fmt ")
+	binary.Write(&buf, binary.LittleEndian, uint32(16))              // fmt chunk size
+	binary.Write(&buf, binary.LittleEndian, uint16(1))               // PCM
+	binary.Write(&buf, binary.LittleEndian, uint16(channels))        // channels
+	binary.Write(&buf, binary.LittleEndian, uint32(SampleRate))      // sample rate
+	binary.Write(&buf, binary.LittleEndian, uint32(byteRate))        // byte rate
+	binary.Write(&buf, binary.LittleEndian, uint16(channels*bits/8)) // block align
+	binary.Write(&buf, binary.LittleEndian, uint16(bits))            // bits per sample
+	buf.WriteString("data")
+	binary.Write(&buf, binary.LittleEndian, uint32(len(pcm))) // data chunk size
+	buf.Write(pcm)
+
+	if dir := filepath.Dir(path); dir != "" {
+		_ = os.MkdirAll(dir, 0o755)
+	}
+	return os.WriteFile(path, buf.Bytes(), 0o644)
 }
 
 // PCM16ToFloat32 converts a raw s16le stream to float32 [-1, 1].

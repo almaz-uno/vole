@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -313,6 +314,9 @@ func (d *Daemon) stop(lang string) string {
 	}
 
 	audioSec := float64(len(samples)) / float64(audio.SampleRate)
+	// Debug: dump the raw capture (before the silence/VAD/transcription steps) so
+	// dropped or misheard dictations can be inspected. No-op unless configured.
+	d.saveRawRecording(samples)
 	if peak < d.cfg.SilenceThreshold {
 		fmt.Fprintf(os.Stderr, "[vole] silence: peak=%.4f, %.1fs audio — skipping\n", peak, audioSec)
 		d.ind.Hide()
@@ -370,6 +374,43 @@ func (d *Daemon) confirmCopied() {
 	d.ind.Toast("Copied to clipboard")
 	if _, nop := d.ind.(platform.Nop); nop {
 		notify("📋 vole", "Copied to clipboard")
+	}
+}
+
+// saveRawRecording writes the raw capture to a timestamped WAV beside the
+// configured debug_record path and prunes the set to the newest debug_record_keep
+// files. No-op when debug_record is empty. Best-effort: errors only log.
+func (d *Daemon) saveRawRecording(samples []float32) {
+	base := d.cfg.DebugRecord
+	if base == "" {
+		return
+	}
+	keep := d.cfg.DebugRecordKeep
+	if keep < 1 {
+		keep = 1
+	}
+	ext := filepath.Ext(base)
+	stem := strings.TrimSuffix(base, ext)
+	if ext == "" {
+		ext = ".wav"
+	}
+	// Millisecond resolution (Go needs a dot for fractional seconds) keeps names
+	// unique for rapid dictations and lexically sortable by time.
+	path := stem + "-" + time.Now().Format("20060102-150405.000") + ext
+	if err := audio.WriteWAV16(path, samples); err != nil {
+		fmt.Fprintln(os.Stderr, "vole daemon: record:", err)
+		return
+	}
+	audioSec := float64(len(samples)) / float64(audio.SampleRate)
+	fmt.Fprintf(os.Stderr, "[vole] raw recording saved: %s (%.1fs)\n", path, audioSec)
+
+	// Prune oldest: the fixed-width timestamp makes lexical order chronological.
+	matches, _ := filepath.Glob(stem + "-*" + ext)
+	if len(matches) > keep {
+		sort.Strings(matches)
+		for _, old := range matches[:len(matches)-keep] {
+			_ = os.Remove(old)
+		}
 	}
 }
 

@@ -27,7 +27,8 @@ const threads = 8 // CPU threads for the non-GPU parts (mel, sampling)
 
 // Daemon holds the dictation service state.
 type Daemon struct {
-	cfg config.Config
+	cfg     config.Config
+	version string // build version, shown in the tray (menu title + tooltip)
 
 	mu        sync.Mutex
 	rec       *audio.Recorder
@@ -49,8 +50,9 @@ type Daemon struct {
 
 // Run starts the daemon. If the socket is already served, it exits quietly
 // (one instance per socket). The socket starts listening immediately while the
-// model loads in the background, so START does not wait for the load.
-func Run() error {
+// model loads in the background, so START does not wait for the load. version
+// is the build version shown in the tray.
+func Run(version string) error {
 	cfg := config.Load()
 	sock := cfg.Socket
 	if c, err := net.Dial("unix", sock); err == nil { // already alive
@@ -65,7 +67,7 @@ func Run() error {
 	}
 	defer func() { ln.Close(); os.Remove(sock) }()
 
-	d := &Daemon{cfg: cfg, rec: &audio.Recorder{}, enabled: true, modelReady: make(chan struct{})}
+	d := &Daemon{cfg: cfg, rec: &audio.Recorder{}, enabled: true, modelReady: make(chan struct{}), version: version}
 
 	// pick the input/output backend (X11 or Wayland)
 	backend := platform.Detect(platform.Backend(cfg.Backend))
@@ -83,7 +85,7 @@ func Run() error {
 	if _, ok := d.inj.(platform.AutoPaster); ok {
 		onAutoPaste = d.toggleAutoPaste
 	}
-	d.tr = tray.Run(d.toggleEnabled, func() { os.Exit(0) }, d.toggleRecording, d.pasteHistory, cfg.HistorySize, onAutoPaste, cfg.AutoPaste)
+	d.tr = tray.Run(d.toggleEnabled, func() { os.Exit(0) }, d.toggleRecording, d.pasteHistory, cfg.HistorySize, onAutoPaste, cfg.AutoPaste, d.version)
 	d.hist.OnChange(func(entries []history.Entry) {
 		texts := make([]string, len(entries))
 		for i, e := range entries {
@@ -217,7 +219,7 @@ func (d *Daemon) ensureModels() error {
 		})
 		d.ind.Hide()
 		if d.tr != nil {
-			d.tr.SetTooltip("vole — voice dictation")
+			d.tr.ResetTooltip()
 		}
 		if err != nil {
 			return err

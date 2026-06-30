@@ -42,7 +42,7 @@ func main() {
 	case "version", "-v", "--version":
 		fmt.Println("vole", version)
 	case "daemon":
-		if err := daemon.Run(); err != nil {
+		if err := daemon.Run(version); err != nil {
 			fatal(err)
 		}
 	case "start":

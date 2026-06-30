@@ -35,6 +35,7 @@ var (
 // Tray manages the tray icon and its menu.
 type Tray struct {
 	disabled, idle, rec, proc []byte
+	tooltip                   string // base tooltip, restored after transient messages
 	mToggle                   *systray.MenuItem
 	mAutoPaste                *systray.MenuItem // "Auto-paste" checkbox; nil if not applicable
 
@@ -50,14 +51,16 @@ type Tray struct {
 // onHistory(idx) runs when the user clicks recent-dictation idx. historySize is
 // the number of history slots in the menu. onAutoPaste, if non-nil, adds an
 // "Auto-paste" checkbox (initial state autoPasteOn) that runs it on each click;
-// pass nil to omit the item (e.g. the non-paste injector). The returned Tray can
-// be updated immediately, before the tray host is ready.
-func Run(onToggle, onQuit, onTap func(), onHistory func(idx int), historySize int, onAutoPaste func(), autoPasteOn bool) *Tray {
+// pass nil to omit the item (e.g. the non-paste injector). version is the build
+// version, shown as a disabled menu title and in the tooltip. The returned Tray
+// can be updated immediately, before the tray host is ready.
+func Run(onToggle, onQuit, onTap func(), onHistory func(idx int), historySize int, onAutoPaste func(), autoPasteOn bool, version string) *Tray {
 	t := &Tray{
 		disabled:  pngCircle(colDisabled),
 		idle:      pngCircle(colIdle),
 		rec:       pngCircle(colRec),
 		proc:      pngCircle(colProc),
+		tooltip:   "vole " + version + " — voice dictation",
 		onHistory: onHistory,
 	}
 	if historySize < 0 {
@@ -70,8 +73,13 @@ func Run(onToggle, onQuit, onTap func(), onHistory func(idx int), historySize in
 	}
 	ready := func() {
 		systray.SetTitle("vole")
-		systray.SetTooltip("vole — voice dictation")
+		systray.SetTooltip(t.tooltip)
 		systray.SetIcon(t.idle)
+
+		// version title, greyed (like the recent-dictations header below)
+		mVersion := systray.AddMenuItem("vole "+version, "")
+		mVersion.Disable()
+		systray.AddSeparator()
 
 		// controls first, set off by a separator, so they stay reachable above a
 		// long history list
@@ -192,6 +200,11 @@ func (t *Tray) SetAutoPaste(on bool) {
 // SetTooltip updates the tray tooltip (e.g. download progress).
 func (t *Tray) SetTooltip(s string) {
 	systray.SetTooltip(s)
+}
+
+// ResetTooltip restores the base tooltip (after a transient message).
+func (t *Tray) ResetTooltip() {
+	systray.SetTooltip(t.tooltip)
 }
 
 // SetState updates the icon for the current dictation phase.

@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 
 	"github.com/almaz-uno/vole/internal/platform"
 	"github.com/godbus/dbus/v5"
@@ -15,18 +16,30 @@ import (
 // most GUI apps; terminals (Konsole) may prefer "ctrl+shift+v".
 const defaultPasteKey = "shift+Insert"
 
+// ownDeadline bounds the read-back wait for the selection-owner handoff: we poll
+// until our text is actually served, but never block dictation longer than this.
+const ownDeadline = 500 * time.Millisecond
+
 // Paster injects text by putting it on the clipboard and synthesizing a paste
 // keystroke. Unlike xdotool's keysym typing, this is layout-independent and
 // Unicode-correct (the text travels as data, not keycodes), so it works for
 // Cyrillic regardless of the active keyboard layout. The clipboard is set
 // through the first available of Klipper (KDE), wl-copy (Wayland) or
 // xclip/xsel (X11); the keystroke is sent with xdotool (X11 and Xwayland).
+//
+// The text is published to *both* X11 selections: CLIPBOARD (read by Ctrl+V /
+// Ctrl+Shift+V in GUI apps) and PRIMARY (read by Shift+Insert / middle-click in
+// VTE/xterm terminals). Without PRIMARY a Shift+Insert into a terminal would
+// re-insert the last mouse selection instead of the dictated text.
 type Paster struct {
-	setClip   func(text string) error
-	clipName  string
-	pasteKey  string
-	autoPaste bool       // Type() also sends the paste keystroke; false = clipboard only
-	conn      *dbus.Conn // kept alive for Klipper; nil otherwise
+	setClip    func(text string) error  // set CLIPBOARD
+	setPrimary func(text string) error  // set PRIMARY (nil if the backend can't)
+	getClip    func() (string, error)   // read CLIPBOARD back (nil if unreadable)
+	getPrimary func() (string, error)   // read PRIMARY back (nil if unreadable)
+	clipName   string
+	pasteKey   string
+	autoPaste  bool       // Type() also sends the paste keystroke; false = clipboard only
+	conn       *dbus.Conn // kept alive for Klipper; nil otherwise
 }
 
 var _ platform.Injector = (*Paster)(nil)
@@ -45,43 +58,111 @@ func NewPaste(pasteKey string, autoPaste bool) *Paster {
 		fmt.Fprintln(os.Stderr, "[vole] inject(paste): no clipboard backend found "+
 			"(install one of: KDE Klipper, wl-clipboard, xclip, xsel)")
 	} else {
-		fmt.Fprintf(os.Stderr, "[vole] inject(paste): clipboard via %s, paste via %q\n", p.clipName, pasteKey)
+		prim := ""
+		if p.setPrimary != nil {
+			prim = " + primary"
+		}
+		fmt.Fprintf(os.Stderr, "[vole] inject(paste): clipboard%s via %s, paste via %q\n", prim, p.clipName, pasteKey)
 	}
 	return p
 }
 
+// clipTool describes a command-line clipboard backend: how to set and read each
+// selection. setBin writes (text on stdin); readBin reads (text on stdout) — the
+// same binary for xclip/xsel, but wl-copy reads through its companion wl-paste.
+type clipTool struct {
+	name    string
+	setBin  string
+	clipSet []string
+	primSet []string
+	readBin string
+	clipGet []string
+	primGet []string
+}
+
+// detectCLITool returns the first available command-line clipboard backend, best
+// first, or nil if none is installed.
+func detectCLITool() *clipTool {
+	tools := []clipTool{
+		{
+			name: "wl-copy", setBin: "wl-copy", clipSet: nil, primSet: []string{"--primary"},
+			readBin: "wl-paste", clipGet: []string{"--no-newline"}, primGet: []string{"--primary", "--no-newline"},
+		},
+		{
+			name: "xclip", setBin: "xclip", clipSet: []string{"-selection", "clipboard"}, primSet: []string{"-selection", "primary"},
+			readBin: "xclip", clipGet: []string{"-o", "-selection", "clipboard"}, primGet: []string{"-o", "-selection", "primary"},
+		},
+		{
+			name: "xsel", setBin: "xsel", clipSet: []string{"--clipboard", "--input"}, primSet: []string{"--primary", "--input"},
+			readBin: "xsel", clipGet: []string{"--clipboard", "--output"}, primGet: []string{"--primary", "--output"},
+		},
+	}
+	for i := range tools {
+		if _, err := exec.LookPath(tools[i].setBin); err == nil {
+			return &tools[i]
+		}
+	}
+	return nil
+}
+
 // detectClipboard picks a clipboard backend, best first.
 func (p *Paster) detectClipboard() {
-	// 1. KDE Klipper over DBus (works on X11 and Wayland under Plasma).
+	cli := detectCLITool()
+
+	// 1. KDE Klipper over DBus (works on X11 and Wayland under Plasma). Klipper
+	// owns CLIPBOARD only; PRIMARY is driven through a CLI tool when present.
 	if conn, err := dbus.ConnectSessionBus(); err == nil {
 		var has bool
 		err := conn.BusObject().Call("org.freedesktop.DBus.NameHasOwner", 0, "org.kde.klipper").Store(&has)
 		if err == nil && has {
 			p.conn, p.clipName = conn, "klipper"
+			obj := conn.Object("org.kde.klipper", "/klipper")
 			p.setClip = func(text string) error {
-				return conn.Object("org.kde.klipper", "/klipper").
-					Call("org.kde.klipper.klipper.setClipboardContents", 0, text).Err
+				return obj.Call("org.kde.klipper.klipper.setClipboardContents", 0, text).Err
+			}
+			p.getClip = func() (string, error) {
+				var s string
+				err := obj.Call("org.kde.klipper.klipper.getClipboardContents", 0).Store(&s)
+				return s, err
+			}
+			if cli != nil {
+				p.attachPrimary(cli)
 			}
 			return
 		}
 		conn.Close()
 	}
-	// 2-4. external CLI tools, best first.
-	for _, c := range []struct {
-		name string
-		args []string
-	}{
-		{"wl-copy", nil},
-		{"xclip", []string{"-selection", "clipboard"}},
-		{"xsel", []string{"--clipboard", "--input"}},
-	} {
-		if _, err := exec.LookPath(c.name); err != nil {
-			continue
-		}
-		name, args := c.name, c.args
-		p.clipName = name
-		p.setClip = func(text string) error { return setClipCLI(name, args, text) }
-		return
+
+	// 2. command-line tool (wl-copy / xclip / xsel).
+	if cli != nil {
+		p.clipName = cli.name
+		p.setClip = cliSetter(cli.setBin, cli.clipSet)
+		p.getClip = cliGetter(cli.readBin, cli.clipGet)
+		p.attachPrimary(cli)
+	}
+}
+
+// attachPrimary wires PRIMARY get/set from a CLI tool (used by both the CLI
+// backend and, for PRIMARY only, the Klipper backend).
+func (p *Paster) attachPrimary(c *clipTool) {
+	p.setPrimary = cliSetter(c.setBin, c.primSet)
+	p.getPrimary = cliGetter(c.readBin, c.primGet)
+}
+
+// cliSetter returns a func that feeds text to a clipboard tool's stdin.
+func cliSetter(bin string, args []string) func(string) error {
+	return func(text string) error { return setClipCLI(bin, args, text) }
+}
+
+// cliGetter returns a func that reads a selection's contents, or nil if the
+// reader binary is not installed (so the read-back wait degrades to a settle).
+func cliGetter(bin string, args []string) func() (string, error) {
+	if _, err := exec.LookPath(bin); err != nil {
+		return nil
+	}
+	return func() (string, error) {
+		out, err := exec.Command(bin, args...).Output()
+		return string(out), err
 	}
 }
 
@@ -116,14 +197,58 @@ func (p *Paster) put(text string, paste bool) error {
 	if err := p.setClip(text); err != nil {
 		return fmt.Errorf("inject(paste): set clipboard via %s: %w", p.clipName, err)
 	}
+	// Also own PRIMARY: VTE/xterm terminals paste PRIMARY on Shift+Insert, not
+	// CLIPBOARD; without this they'd re-insert the last mouse selection.
+	if p.setPrimary != nil {
+		if err := p.setPrimary(text); err != nil {
+			fmt.Fprintf(os.Stderr, "[vole] inject(paste): set primary: %v\n", err)
+		}
+	}
 	if !paste {
 		return nil
 	}
+	// The X11 clipboard is an ownership protocol: the CLI tool acquires the
+	// selection asynchronously, so a keystroke sent immediately can be served by
+	// the previous owner (stale content). Wait until our text is actually served
+	// before pasting.
+	p.waitOwned(text)
 	out, err := exec.Command("xdotool", "key", "--clearmodifiers", p.pasteKey).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("xdotool key %s: %w (%s)", p.pasteKey, err, strings.TrimSpace(string(out)))
 	}
 	return nil
+}
+
+// waitOwned polls the readable selections until each serves text — i.e. the
+// selection-owner handoff has completed and a paste will see our content. It
+// returns on the first all-match or when ownDeadline elapses (so a flaky reader
+// never blocks dictation); with no reader it falls back to a short settle.
+func (p *Paster) waitOwned(text string) {
+	readers := make([]func() (string, error), 0, 2)
+	if p.getClip != nil {
+		readers = append(readers, p.getClip)
+	}
+	if p.getPrimary != nil {
+		readers = append(readers, p.getPrimary)
+	}
+	if len(readers) == 0 {
+		time.Sleep(40 * time.Millisecond)
+		return
+	}
+	deadline := time.Now().Add(ownDeadline)
+	for {
+		ok := true
+		for _, r := range readers {
+			if got, err := r(); err != nil || got != text {
+				ok = false
+				break
+			}
+		}
+		if ok || time.Now().After(deadline) {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }
 
 // setClipCLI feeds text to a clipboard tool's stdin. The tool keeps running to

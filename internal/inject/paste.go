@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/almaz-uno/vole/internal/platform"
+	"github.com/bendahl/uinput"
 	"github.com/godbus/dbus/v5"
 )
 
@@ -39,6 +40,8 @@ type Paster struct {
 	getPrimary func() (string, error)  // read PRIMARY back (nil if unreadable)
 	clipName   string
 	pasteKey   string
+	kb         uinput.Keyboard // nil if /dev/uinput is unavailable
+	kbKeys     []int           // evdev codes for the paste keystroke; nil = use xdotool
 	autoPaste  atomic.Bool // Type() also sends the paste keystroke; false = clipboard only (live: tray toggle)
 	conn       *dbus.Conn  // kept alive for Klipper; nil otherwise
 }
@@ -58,6 +61,10 @@ func NewPaste(pasteKey string, autoPaste bool) *Paster {
 	}
 	p := &Paster{pasteKey: pasteKey}
 	p.autoPaste.Store(autoPaste)
+	if codes := parseEvdevCombo(pasteKey); codes != nil {
+		p.kbKeys = codes
+		p.kb = openUinputKeyboard("/dev/uinput")
+	}
 	p.detectClipboard()
 	if p.setClip == nil {
 		fmt.Fprintln(os.Stderr, "[vole] inject(paste): no clipboard backend found "+
@@ -223,11 +230,50 @@ func (p *Paster) put(text string, paste bool) error {
 	// the previous owner (stale content). Wait until our text is actually served
 	// before pasting.
 	p.waitOwned(text)
-	out, err := exec.Command("xdotool", "key", "--clearmodifiers", p.pasteKey).CombinedOutput()
+	// Use uinput when available: events go through the kernel input stack directly
+	// to the compositor, so modifier state never leaks into the Wayland session.
+	// Fall back to xdotool (XWayland path) when /dev/uinput is inaccessible.
+	if p.kb != nil {
+		return p.sendKeystroke()
+	}
+	out, err := exec.Command("xdotool",
+		"keyup",
+		"Control_L", "Control_R", "Super_L", "Super_R",
+		"Alt_L", "Alt_R", "Shift_L", "Shift_R",
+		"key", p.pasteKey,
+		"keyup", "Shift_L", "Shift_R").CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("xdotool key %s: %w (%s)", p.pasteKey, err, strings.TrimSpace(string(out)))
 	}
 	return nil
+}
+
+// sendKeystroke sends the paste keystroke via the uinput virtual keyboard.
+// Keys are pressed in order and released in reverse (modifier → key → key → modifier).
+func (p *Paster) sendKeystroke() error {
+	for _, code := range p.kbKeys {
+		if err := p.kb.KeyDown(code); err != nil {
+			return fmt.Errorf("uinput key down %d: %w", code, err)
+		}
+	}
+	for i := len(p.kbKeys) - 1; i >= 0; i-- {
+		if err := p.kb.KeyUp(p.kbKeys[i]); err != nil {
+			return fmt.Errorf("uinput key up %d: %w", p.kbKeys[i], err)
+		}
+	}
+	return nil
+}
+
+// Close releases the uinput keyboard device (if open) and the D-Bus connection.
+func (p *Paster) Close() {
+	if p.kb != nil {
+		_ = p.kb.Close()
+		p.kb = nil
+	}
+	if p.conn != nil {
+		p.conn.Close()
+		p.conn = nil
+	}
 }
 
 // waitOwned polls the readable selections until each serves text — i.e. the

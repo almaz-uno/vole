@@ -11,6 +11,7 @@ require (
 )
 
 require (
+	github.com/bendahl/uinput v1.7.0
 	golang.org/x/sys v0.46.0 // indirect
 	golang.org/x/text v0.38.0 // indirect
 )

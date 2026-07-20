@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/almaz-uno/vole/internal/audio"
@@ -19,6 +20,7 @@ import (
 	"github.com/almaz-uno/vole/internal/history"
 	"github.com/almaz-uno/vole/internal/models"
 	"github.com/almaz-uno/vole/internal/platform"
+	"github.com/almaz-uno/vole/internal/postprocess"
 	"github.com/almaz-uno/vole/internal/tray"
 	"github.com/almaz-uno/vole/internal/whisper"
 )
@@ -36,6 +38,9 @@ type Daemon struct {
 	byClick   bool // current recording was started by a tray click (→ clipboard only)
 	enabled   bool
 	lang      string
+
+	postOn     atomic.Bool // post-processing runtime toggle (tray checkbox); resets to cfg.PostProcessOn on restart
+	postScript string      // configured post-processing script path; empty = feature unavailable
 
 	ctx        *whisper.Context
 	modelReady chan struct{} // closed once the model is loaded
@@ -68,6 +73,10 @@ func Run(version string) error {
 	defer func() { ln.Close(); os.Remove(sock) }()
 
 	d := &Daemon{cfg: cfg, rec: &audio.Recorder{}, enabled: true, modelReady: make(chan struct{}), version: version}
+	d.postScript = cfg.PostProcess
+	if cfg.PostProcess != "" {
+		d.postOn.Store(cfg.PostProcessOn)
+	}
 
 	// pick the input/output backend (X11 or Wayland)
 	backend := platform.Detect(platform.Backend(cfg.Backend))
@@ -79,13 +88,19 @@ func Run(version string) error {
 	d.hist = history.New(cfg.HistoryFile, cfg.HistorySize)
 
 	// system-tray icon: left-click = start/stop recording, right-click = menu
-	// (recent dictations, enable/disable, auto-paste, quit). The auto-paste
-	// checkbox only applies to the clipboard-paste injector.
+	// (recent dictations, enable/disable, auto-paste, post-process, quit). The
+	// auto-paste checkbox only applies to the clipboard-paste injector; the
+	// post-process checkbox only appears when a post-processing script is
+	// configured.
 	var onAutoPaste func()
 	if _, ok := d.inj.(platform.AutoPaster); ok {
 		onAutoPaste = d.toggleAutoPaste
 	}
-	d.tr = tray.Run(d.toggleEnabled, func() { os.Exit(0) }, d.toggleRecording, d.pasteHistory, cfg.HistorySize, onAutoPaste, cfg.AutoPaste, d.version)
+	var onPostProcess func()
+	if cfg.PostProcess != "" {
+		onPostProcess = d.togglePostProcess
+	}
+	d.tr = tray.Run(d.toggleEnabled, func() { os.Exit(0) }, d.toggleRecording, d.pasteHistory, cfg.HistorySize, onAutoPaste, cfg.AutoPaste, onPostProcess, d.postOn.Load(), d.version)
 	d.hist.OnChange(func(entries []history.Entry) {
 		texts := make([]string, len(entries))
 		for i, e := range entries {
@@ -271,6 +286,24 @@ func (d *Daemon) toggleAutoPaste() {
 	}
 }
 
+// togglePostProcess flips post-processing at runtime (via the tray checkbox):
+// while on, each dictation is piped through the configured script (stdin) and
+// the improved text (stdout) is what is pasted; the raw transcript still lands
+// on the clipboard and in the history. In-memory — it resets to the configured
+// postprocess_on on restart.
+func (d *Daemon) togglePostProcess() {
+	on := !d.postOn.Load()
+	d.postOn.Store(on)
+	if d.tr != nil {
+		d.tr.SetPostProcess(on)
+	}
+	if on {
+		notify("✨ vole", "post-processing on")
+	} else {
+		notify("vole", "post-processing off")
+	}
+}
+
 // setLang changes the language of the current recording (live Shift) and the overlay label.
 func (d *Daemon) setLang(lang string) {
 	d.mu.Lock()
@@ -347,17 +380,47 @@ func (d *Daemon) stop(lang string) string {
 	}
 	fmt.Fprintf(os.Stderr, "[vole] %s | audio %.1fs | transcribed in %.2fs | peak=%.3f | %q\n",
 		d.lang, audioSec, dur.Seconds(), peak, text)
-	d.hist.Add(text) // record the dictation (tray menu + history file)
+	d.hist.Add(text) // record the raw dictation (tray menu + history file)
+	// Optional post-processing: pipe the raw transcript through a script and use
+	// its stdout as the improved text. On any error or empty output we fall back
+	// to the raw transcript, so a broken script never blocks dictation.
+	improved, postOK := d.postProcess(text)
+	if postOK {
+		d.hist.Add(improved) // improved text as a separate, newest history entry
+	}
 	// tray-click dictation only copies to the clipboard (focus is on the tray);
 	// PTT / socket dictation injects into the focused window — unless auto-paste
 	// is toggled off, when Type() itself only copies (we then confirm it too).
+	// With post-processing on and a clipboard backend, the raw transcript is put
+	// on the clipboard first (preserving it as the previous Klipper entry) and the
+	// improved text is pasted; both also stay in the history.
 	var injErr error
-	if c, ok := d.inj.(platform.Copier); ok && byClick {
-		injErr = c.Copy(text)
+	copier, hasCopier := d.inj.(platform.Copier)
+	switch {
+	case hasCopier && byClick:
+		injErr = d.copyTwo(copier, text, improved, postOK) // clipboard only, no paste
 		if injErr == nil {
 			d.confirmCopied()
 		}
-	} else {
+	case postOK:
+		if hasCopier {
+			_ = copier.Copy(text) // raw → clipboard (previous Klipper entry), no paste
+		}
+		if ap, ok := d.inj.(platform.AutoPaster); ok && !ap.AutoPaste() {
+			if hasCopier {
+				injErr = copier.Copy(improved) // auto-paste off: improved on clipboard, no paste
+			} else {
+				injErr = d.inj.Type(improved)
+			}
+			if injErr == nil {
+				d.confirmCopied()
+			}
+		} else if ins, ok := d.inj.(platform.Inserter); ok {
+			injErr = ins.Insert(improved) // paste the improved text into the focused window
+		} else {
+			injErr = d.inj.Type(improved) // degraded: no clipboard, just type improved
+		}
+	default:
 		injErr = d.inj.Type(text)
 		if ap, ok := d.inj.(platform.AutoPaster); ok && !ap.AutoPaste() && injErr == nil {
 			d.confirmCopied()
@@ -367,6 +430,37 @@ func (d *Daemon) stop(lang string) string {
 		fmt.Fprintln(os.Stderr, "vole daemon: inject:", injErr)
 	}
 	return text
+}
+
+// postProcess runs the configured script on the raw transcript when
+// post-processing is enabled, returning the improved text. It returns
+// ("", false) when post-processing is off, no script is configured, the input is
+// empty, or the script fails — in all these cases the caller uses the raw text.
+func (d *Daemon) postProcess(text string) (string, bool) {
+	if text == "" || !d.postOn.Load() || d.postScript == "" {
+		return "", false
+	}
+	improved, err := postprocess.Run(d.postScript, text)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "vole daemon:", err)
+		return "", false
+	}
+	fmt.Fprintf(os.Stderr, "[vole] post-processed: %q -> %q\n", text, improved)
+	return improved, true
+}
+
+// copyTwo puts raw (and, when postOK, improved) on the clipboard without pasting
+// — used for tray-click dictation, where the focus is on the tray, not a field.
+// The last copy wins, so improved becomes the active selection; raw stays as the
+// previous Klipper entry. The last error is returned.
+func (d *Daemon) copyTwo(c platform.Copier, raw, improved string, postOK bool) error {
+	if err := c.Copy(raw); err != nil {
+		return err
+	}
+	if postOK {
+		return c.Copy(improved)
+	}
+	return nil
 }
 
 // confirmCopied gives feedback that text landed on the clipboard without being

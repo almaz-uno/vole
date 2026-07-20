@@ -38,6 +38,7 @@ type Tray struct {
 	tooltip                   string // base tooltip, restored after transient messages
 	mToggle                   *systray.MenuItem
 	mAutoPaste                *systray.MenuItem // "Auto-paste" checkbox; nil if not applicable
+	mPostProcess              *systray.MenuItem // "Post-process" checkbox; nil if not applicable
 
 	onHistory func(idx int) // invoked with the index of a clicked history entry
 
@@ -51,10 +52,13 @@ type Tray struct {
 // onHistory(idx) runs when the user clicks recent-dictation idx. historySize is
 // the number of history slots in the menu. onAutoPaste, if non-nil, adds an
 // "Auto-paste" checkbox (initial state autoPasteOn) that runs it on each click;
-// pass nil to omit the item (e.g. the non-paste injector). version is the build
-// version, shown as a disabled menu title and in the tooltip. The returned Tray
-// can be updated immediately, before the tray host is ready.
-func Run(onToggle, onQuit, onTap func(), onHistory func(idx int), historySize int, onAutoPaste func(), autoPasteOn bool, version string) *Tray {
+// pass nil to omit the item (e.g. the non-paste injector). onPostProcess, if
+// non-nil, adds a "Post-process" checkbox (initial state postProcessOn) that runs
+// it on each click; pass nil to omit the item (e.g. no post-process script
+// configured). version is the build version, shown as a disabled menu title and
+// in the tooltip. The returned Tray can be updated immediately, before the tray
+// host is ready.
+func Run(onToggle, onQuit, onTap func(), onHistory func(idx int), historySize int, onAutoPaste func(), autoPasteOn bool, onPostProcess func(), postProcessOn bool, version string) *Tray {
 	t := &Tray{
 		disabled:  pngCircle(colDisabled),
 		idle:      pngCircle(colIdle),
@@ -90,6 +94,12 @@ func Run(onToggle, onQuit, onTap func(), onHistory func(idx int), historySize in
 				"Paste after dictation (off: only copy to the clipboard)", autoPasteOn)
 			autoPasteCh = t.mAutoPaste.ClickedCh
 		}
+		var postProcessCh <-chan struct{}
+		if onPostProcess != nil {
+			t.mPostProcess = systray.AddMenuItemCheckbox("Post-process",
+				"Run a script on each dictation to clean up the transcript", postProcessOn)
+			postProcessCh = t.mPostProcess.ClickedCh
+		}
 		mQuit := systray.AddMenuItem("Quit", "Stop vole")
 		go func() {
 			for {
@@ -99,6 +109,10 @@ func Run(onToggle, onQuit, onTap func(), onHistory func(idx int), historySize in
 				case <-autoPasteCh: // nil when omitted: this case never fires
 					if onAutoPaste != nil {
 						onAutoPaste()
+					}
+				case <-postProcessCh: // nil when omitted: this case never fires
+					if onPostProcess != nil {
+						onPostProcess()
 					}
 				case <-mQuit.ClickedCh:
 					systray.Quit()
@@ -194,6 +208,18 @@ func (t *Tray) SetAutoPaste(on bool) {
 		t.mAutoPaste.Check()
 	} else {
 		t.mAutoPaste.Uncheck()
+	}
+}
+
+// SetPostProcess reflects the post-process toggle state in the menu checkbox.
+func (t *Tray) SetPostProcess(on bool) {
+	if t.mPostProcess == nil {
+		return
+	}
+	if on {
+		t.mPostProcess.Check()
+	} else {
+		t.mPostProcess.Uncheck()
 	}
 }
 

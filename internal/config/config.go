@@ -30,6 +30,8 @@ type Config struct {
 	Inject           string  `yaml:"inject"`            // injection method: auto|type|paste
 	PasteKey         string  `yaml:"paste_key"`         // paste keystroke for inject=paste (xdotool key spec); default Shift+Insert
 	AutoPaste        bool    `yaml:"auto_paste"`        // inject=paste: auto-paste after dictation (false = copy to clipboard only)
+	PostProcess      string  `yaml:"postprocess"`       // path to a post-processing script (stdin=transcript, stdout=improved); empty = off
+	PostProcessOn    bool    `yaml:"postprocess_on"`    // run post-processing at startup (runtime-toggled in the tray); default false
 	HistorySize      int     `yaml:"history_size"`      // dictations kept in the history / tray menu
 	HistoryFile      string  `yaml:"history_file"`      // path to the dictation history (JSONL)
 	DebugRecord      string  `yaml:"debug_record"`      // debug: dump raw recordings near this WAV path (empty = off)
@@ -85,11 +87,15 @@ func Load() Config {
 	if v := os.Getenv("VOLE_RECORD"); v != "" {
 		c.DebugRecord = v
 	}
+	if v := os.Getenv("VOLE_POSTPROCESS"); v != "" {
+		c.PostProcess = v
+	}
 	c.Model = expandHome(c.Model)
 	c.VAD = expandHome(c.VAD)
 	c.Socket = expandHome(c.Socket)
 	c.HistoryFile = expandHome(c.HistoryFile)
 	c.DebugRecord = expandHome(c.DebugRecord)
+	c.PostProcess = expandHome(c.PostProcess)
 	return c
 }
 

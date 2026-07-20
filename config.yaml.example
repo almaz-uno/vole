@@ -25,6 +25,19 @@ inject: auto
 # clipboard and paste it yourself. Clicking a history entry always pastes.
 auto_paste: true
 
+# Post-processing: an external script that receives the raw transcript on stdin
+# and returns an improved version on stdout (e.g. punctuation/case cleanup, or an
+# LLM call). The script runs as an executable directly — it needs a shebang
+# (#!/bin/sh, #!/usr/bin/env python3, …) and the execute bit. With post-processing
+# on, the improved text is pasted into the focused window and both the raw and the
+# improved text land on the clipboard (raw as the previous Klipper entry) and in
+# the history. If the script fails, times out, or returns empty output, the raw
+# transcript is used as before. Env: VOLE_POSTPROCESS.
+# postprocess: ~/.config/vole/postprocess.sh
+# Enable at startup; toggle at runtime via the tray "Post-process" checkbox
+# (shown only when a script is configured). Default off.
+# postprocess_on: false
+
 # PTT hotkey: hold to record, release to transcribe and inject.
 #
 # X11: while the key is held, Shift switches the language on the fly

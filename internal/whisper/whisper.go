@@ -57,7 +57,12 @@ func (c *Context) Close() {
 
 // Transcribe transcribes 16 kHz mono float32 PCM.
 // lang="" or "auto" auto-detects the language.
-func (c *Context) Transcribe(samples []float32, lang string, threads int) (string, error) {
+// prompt, when non-empty, seeds the decoder (whisper_full_params.initial_prompt):
+// short prior context (e.g. the last dictation) that biases recognition toward
+// the active vocabulary/topic — this notably steadies short, otherwise-ambiguous
+// phrases. It is not a chat prompt: keep it to a sentence or two in the same
+// language, or pass "" to disable.
+func (c *Context) Transcribe(samples []float32, lang string, threads int, prompt string) (string, error) {
 	if len(samples) == 0 {
 		return "", nil
 	}
@@ -80,6 +85,15 @@ func (c *Context) Transcribe(samples []float32, lang string, threads int) (strin
 		params.language = clang
 	} else {
 		params.detect_language = cbool(true)
+	}
+
+	// initial_prompt: keep the C string alive until whisper_full returns (defer
+	// frees it on function exit, after the call). no_context above is unrelated
+	// (it suppresses re-feeding prior decoded segments, not the initial seed).
+	if prompt != "" {
+		cprompt := C.CString(prompt)
+		defer C.free(unsafe.Pointer(cprompt))
+		params.initial_prompt = cprompt
 	}
 
 	// VAD: trim pauses before transcription — this avoids whisper looping

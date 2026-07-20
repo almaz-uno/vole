@@ -368,13 +368,16 @@ func (d *Daemon) stop(lang string) string {
 
 	<-d.modelReady // wait for the model to load if it is still loading
 	t0 := time.Now()
-	text, err := d.ctx.Transcribe(samples, d.lang, threads)
+	// Seed whisper with the previous dictation so short, ambiguous phrases lean
+	// toward the active vocabulary/topic. Built before hist.Add below, so it
+	// uses prior history only (not the text being transcribed right now).
+	text, err := d.ctx.Transcribe(samples, d.lang, threads, d.whisperPrompt())
 	dur := time.Since(t0)
-	d.ind.Hide()
-	if d.tr != nil {
-		d.tr.SetState(tray.StateIdle)
-	}
 	if err != nil {
+		d.ind.Hide()
+		if d.tr != nil {
+			d.tr.SetState(tray.StateIdle)
+		}
 		fmt.Fprintln(os.Stderr, "vole daemon: transcribe:", err)
 		return ""
 	}
@@ -383,10 +386,32 @@ func (d *Daemon) stop(lang string) string {
 	d.hist.Add(text) // record the raw dictation (tray menu + history file)
 	// Optional post-processing: pipe the raw transcript through a script and use
 	// its stdout as the improved text. On any error or empty output we fall back
-	// to the raw transcript, so a broken script never blocks dictation.
+	// to the raw transcript, so a broken script never blocks dictation. While the
+	// script runs, switch the indicator to a distinct "post" state (a blue tray
+	// dot / blue overlay icon) so the user sees the hook is active even though
+	// recognition is finished — then drop it before injection so a clipboard
+	// toast (confirmCopied) behaves exactly as on the non-post path.
+	postActive := text != "" && d.postOn.Load() && d.postScript != ""
+	if postActive {
+		if d.tr != nil {
+			d.tr.SetState(tray.StatePostProcessing)
+		}
+		d.ind.SetMode(platform.ModePostProcessing)
+	} else {
+		d.ind.Hide()
+		if d.tr != nil {
+			d.tr.SetState(tray.StateIdle)
+		}
+	}
 	improved, postOK := d.postProcess(text)
 	if postOK {
 		d.hist.Add(improved) // improved text as a separate, newest history entry
+	}
+	if postActive {
+		d.ind.Hide()
+		if d.tr != nil {
+			d.tr.SetState(tray.StateIdle)
+		}
 	}
 	// tray-click dictation only copies to the clipboard (focus is on the tray);
 	// PTT / socket dictation injects into the focused window — unless auto-paste
@@ -440,13 +465,38 @@ func (d *Daemon) postProcess(text string) (string, bool) {
 	if text == "" || !d.postOn.Load() || d.postScript == "" {
 		return "", false
 	}
-	improved, err := postprocess.Run(d.postScript, text)
+	to := time.Duration(d.cfg.PostProcessTimeout) * time.Second
+	if to <= 0 {
+		to = 30 * time.Second
+	}
+	improved, err := postprocess.RunTimeout(d.postScript, text, to)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "vole daemon:", err)
 		return "", false
 	}
 	fmt.Fprintf(os.Stderr, "[vole] post-processed: %q -> %q\n", text, improved)
 	return improved, true
+}
+
+// whisperPrompt returns a short initial_prompt for whisper — the previous
+// dictation, trimmed — when whisper_prompt is enabled; "" otherwise. It uses the
+// history *before* the current dictation is recorded, so it never seeds the
+// decoder with the very text it is about to transcribe.
+func (d *Daemon) whisperPrompt() string {
+	if !d.cfg.WhisperPrompt || d.hist == nil {
+		return ""
+	}
+	items := d.hist.Items()
+	if len(items) == 0 {
+		return ""
+	}
+	// one prior utterance, capped to a sentence-ish length: whisper's
+	// initial_prompt is a token seed, not a context window.
+	p := strings.TrimSpace(items[0].Text)
+	if r := []rune(p); len(r) > 200 {
+		p = string(r[:200])
+	}
+	return p
 }
 
 // copyTwo puts raw (and, when postOK, improved) on the clipboard without pasting

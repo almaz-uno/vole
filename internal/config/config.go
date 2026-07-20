@@ -20,40 +20,44 @@ type Hotkey struct {
 
 // Config is the full daemon configuration.
 type Config struct {
-	Hotkey           Hotkey  `yaml:"hotkey"`
-	SilenceThreshold float64 `yaml:"silence_threshold"`
-	VADThreshold     float64 `yaml:"vad_threshold"` // Silero speech probability [0,1]; lower = catches quieter/whispered speech
-	Model            string  `yaml:"model"`
-	VAD              string  `yaml:"vad"`
-	Socket           string  `yaml:"socket"`
-	Backend          string  `yaml:"backend"`           // input/output backend: auto|x11|wayland
-	Inject           string  `yaml:"inject"`            // injection method: auto|type|paste
-	PasteKey         string  `yaml:"paste_key"`         // paste keystroke for inject=paste (xdotool key spec); default Shift+Insert
-	AutoPaste        bool    `yaml:"auto_paste"`        // inject=paste: auto-paste after dictation (false = copy to clipboard only)
-	PostProcess      string  `yaml:"postprocess"`       // path to a post-processing script (stdin=transcript, stdout=improved); empty = off
-	PostProcessOn    bool    `yaml:"postprocess_on"`    // run post-processing at startup (runtime-toggled in the tray); default false
-	HistorySize      int     `yaml:"history_size"`      // dictations kept in the history / tray menu
-	HistoryFile      string  `yaml:"history_file"`      // path to the dictation history (JSONL)
-	DebugRecord      string  `yaml:"debug_record"`      // debug: dump raw recordings near this WAV path (empty = off)
-	DebugRecordKeep  int     `yaml:"debug_record_keep"` // debug: how many recent raw recordings to retain (min 1)
+	Hotkey             Hotkey  `yaml:"hotkey"`
+	SilenceThreshold   float64 `yaml:"silence_threshold"`
+	VADThreshold       float64 `yaml:"vad_threshold"` // Silero speech probability [0,1]; lower = catches quieter/whispered speech
+	Model              string  `yaml:"model"`
+	VAD                string  `yaml:"vad"`
+	Socket             string  `yaml:"socket"`
+	Backend            string  `yaml:"backend"`             // input/output backend: auto|x11|wayland
+	Inject             string  `yaml:"inject"`              // injection method: auto|type|paste
+	PasteKey           string  `yaml:"paste_key"`           // paste keystroke for inject=paste (xdotool key spec); default Shift+Insert
+	AutoPaste          bool    `yaml:"auto_paste"`          // inject=paste: auto-paste after dictation (false = copy to clipboard only)
+	PostProcess        string  `yaml:"postprocess"`         // path to a post-processing script (stdin=transcript, stdout=improved); empty = off
+	PostProcessOn      bool    `yaml:"postprocess_on"`      // run post-processing at startup (runtime-toggled in the tray); default false
+	PostProcessTimeout int     `yaml:"postprocess_timeout"` // seconds to let the post-process script run before it is killed (default 30)
+	WhisperPrompt      bool    `yaml:"whisper_prompt"`      // seed whisper with the last dictation as initial_prompt (steadies short phrases); default true
+	HistorySize        int     `yaml:"history_size"`        // dictations kept in the history / tray menu
+	HistoryFile        string  `yaml:"history_file"`        // path to the dictation history (JSONL)
+	DebugRecord        string  `yaml:"debug_record"`        // debug: dump raw recordings near this WAV path (empty = off)
+	DebugRecordKeep    int     `yaml:"debug_record_keep"`   // debug: how many recent raw recordings to retain (min 1)
 }
 
 // Defaults returns the default configuration (used when no file is present).
 func Defaults() Config {
 	home := os.Getenv("HOME")
 	return Config{
-		Hotkey:           Hotkey{Mods: "Super+Control", Key: "d", Lang: "ru", LangShift: "en"},
-		SilenceThreshold: 0.005,
-		VADThreshold:     0.3,
-		Model:            filepath.Join(home, ".local/share/dictation/whisper.cpp/models/ggml-large-v3.bin"),
-		VAD:              filepath.Join(home, ".local/share/dictation/whisper.cpp/models/ggml-silero-v5.1.2.bin"),
-		Socket:           socketDefault(),
-		Backend:          "auto",
-		Inject:           "paste", // clipboard paste: instant, block insert, layout-independent
-		AutoPaste:        true,
-		HistorySize:      256,
-		HistoryFile:      stateDefault(),
-		DebugRecordKeep:  3,
+		Hotkey:             Hotkey{Mods: "Super+Control", Key: "d", Lang: "ru", LangShift: "en"},
+		SilenceThreshold:   0.005,
+		VADThreshold:       0.3,
+		Model:              filepath.Join(home, ".local/share/dictation/whisper.cpp/models/ggml-large-v3.bin"),
+		VAD:                filepath.Join(home, ".local/share/dictation/whisper.cpp/models/ggml-silero-v5.1.2.bin"),
+		Socket:             socketDefault(),
+		Backend:            "auto",
+		Inject:             "paste", // clipboard paste: instant, block insert, layout-independent
+		AutoPaste:          true,
+		PostProcessTimeout: 30,   // generous: cloud/vision post-processing may take several seconds
+		WhisperPrompt:      true, // seed whisper with the last dictation — steadies short phrases
+		HistorySize:        256,
+		HistoryFile:        stateDefault(),
+		DebugRecordKeep:    3,
 	}
 }
 

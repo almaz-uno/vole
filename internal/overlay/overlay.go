@@ -32,11 +32,12 @@ import (
 type Mode = platform.Mode
 
 const (
-	ModeHidden      = platform.ModeHidden
-	ModeRecording   = platform.ModeRecording
-	ModeProcessing  = platform.ModeProcessing
-	ModeDownloading = platform.ModeDownloading
-	ModeToast       = platform.ModeToast
+	ModeHidden         = platform.ModeHidden
+	ModeRecording      = platform.ModeRecording
+	ModeProcessing     = platform.ModeProcessing
+	ModePostProcessing = platform.ModePostProcessing
+	ModeDownloading    = platform.ModeDownloading
+	ModeToast          = platform.ModeToast
 )
 
 var _ platform.Indicator = (*Overlay)(nil)
@@ -58,6 +59,7 @@ var (
 	colBG    = color.NRGBA{30, 30, 46, 235}
 	colRec   = color.NRGBA{229, 57, 53, 255}
 	colProc  = color.NRGBA{255, 179, 0, 255}
+	colPost  = color.NRGBA{33, 150, 243, 255} // blue — post-processing hook
 	colText  = color.NRGBA{239, 240, 241, 255}
 	colOK    = color.NRGBA{76, 175, 80, 255} // green check mark for the toast
 	colVUoff = color.NRGBA{58, 58, 78, 255}
@@ -144,10 +146,10 @@ func New() (*Overlay, error) {
 		conn: conn, win: win, gc: gc, root: screen.Root, depth: depth,
 		screenW: int(screen.WidthInPixels), screenH: int(screen.HeightInPixels),
 		hasRandr: randr.Init(conn) == nil, // for per-monitor centering on a multi-head X screen
-		img:  image.NewNRGBA(image.Rect(0, 0, winW, winH)),
-		buf:  make([]byte, winW*winH*4),
-		cmd:  make(chan func(), 8),
-		quit: make(chan struct{}),
+		img:      image.NewNRGBA(image.Rect(0, 0, winW, winH)),
+		buf:      make([]byte, winW*winH*4),
+		cmd:      make(chan func(), 8),
+		quit:     make(chan struct{}),
 	}
 	o.loadFont()
 	go o.loop()
@@ -392,6 +394,8 @@ func (o *Overlay) drawRecording(lang string, level float64, mode Mode) {
 	icon := colRec
 	if mode == ModeProcessing {
 		icon = colProc
+	} else if mode == ModePostProcessing {
+		icon = colPost
 	}
 	fillCircle(o.img, 25, winH/2, 7.5, icon)
 

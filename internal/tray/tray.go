@@ -23,22 +23,24 @@ const (
 	StateIdle
 	StateRecording
 	StateProcessing
+	StatePostProcessing
 )
 
 var (
 	colDisabled = color.NRGBA{90, 90, 95, 160} // dimmed — dictation off
 	colIdle     = color.NRGBA{120, 130, 150, 255}
-	colRec      = color.NRGBA{229, 57, 53, 255} // red — recording
-	colProc     = color.NRGBA{255, 179, 0, 255} // amber — transcribing
+	colRec      = color.NRGBA{229, 57, 53, 255}  // red — recording
+	colProc     = color.NRGBA{255, 179, 0, 255}  // amber — transcribing
+	colPost     = color.NRGBA{33, 150, 243, 255} // blue — post-processing hook running
 )
 
 // Tray manages the tray icon and its menu.
 type Tray struct {
-	disabled, idle, rec, proc []byte
-	tooltip                   string // base tooltip, restored after transient messages
-	mToggle                   *systray.MenuItem
-	mAutoPaste                *systray.MenuItem // "Auto-paste" checkbox; nil if not applicable
-	mPostProcess              *systray.MenuItem // "Post-process" checkbox; nil if not applicable
+	disabled, idle, rec, proc, post []byte
+	tooltip                         string // base tooltip, restored after transient messages
+	mToggle                         *systray.MenuItem
+	mAutoPaste                      *systray.MenuItem // "Auto-paste" checkbox; nil if not applicable
+	mPostProcess                    *systray.MenuItem // "Post-process" checkbox; nil if not applicable
 
 	onHistory func(idx int) // invoked with the index of a clicked history entry
 
@@ -64,6 +66,7 @@ func Run(onToggle, onQuit, onTap func(), onHistory func(idx int), historySize in
 		idle:      pngCircle(colIdle),
 		rec:       pngCircle(colRec),
 		proc:      pngCircle(colProc),
+		post:      pngCircle(colPost),
 		tooltip:   "vole " + version + " — voice dictation",
 		onHistory: onHistory,
 	}
@@ -242,6 +245,8 @@ func (t *Tray) SetState(s State) {
 		systray.SetIcon(t.rec)
 	case StateProcessing:
 		systray.SetIcon(t.proc)
+	case StatePostProcessing:
+		systray.SetIcon(t.post)
 	default:
 		systray.SetIcon(t.idle)
 	}

@@ -32,11 +32,23 @@ auto_paste: true
 # on, the improved text is pasted into the focused window and both the raw and the
 # improved text land on the clipboard (raw as the previous Klipper entry) and in
 # the history. If the script fails, times out, or returns empty output, the raw
-# transcript is used as before. Env: VOLE_POSTPROCESS.
+# transcript is used as before. See PostProcessing/Examples/ for ready-made
+# scripts you can copy (e.g. ollama-qwen-cloud-vision-repair.py). Env: VOLE_POSTPROCESS.
 # postprocess: ~/.config/vole/postprocess.sh
 # Enable at startup; toggle at runtime via the tray "Post-process" checkbox
 # (shown only when a script is configured). Default off.
 # postprocess_on: false
+
+# Seconds the post-processing script may run before it is killed. Cloud/vision
+# scripts (a screenshot upload + a remote model) can take several seconds, so the
+# default is generous. On timeout vole falls back to the raw transcript.
+# postprocess_timeout: 30
+
+# Seed whisper with the previous dictation as its initial_prompt. This biases
+# recognition toward the active vocabulary/topic and notably steadies short,
+# otherwise-ambiguous phrases — a cheap, local, offline lever independent of the
+# post-processing script. Default on.
+# whisper_prompt: true
 
 # PTT hotkey: hold to record, release to transcribe and inject.
 #

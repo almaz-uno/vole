@@ -22,6 +22,7 @@ const (
 	ModeHidden Mode = iota
 	ModeRecording
 	ModeProcessing
+	ModePostProcessing
 	ModeDownloading
 	ModeToast
 )

@@ -166,7 +166,7 @@ func cmdTranscribe(args []string) {
 		fatal(err)
 	}
 	defer ctx.Close()
-	text, err := ctx.Transcribe(samples, lang, runtime.NumCPU())
+	text, err := ctx.Transcribe(samples, lang, runtime.NumCPU(), "")
 	if err != nil {
 		fatal(err)
 	}

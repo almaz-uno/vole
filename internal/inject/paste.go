@@ -42,8 +42,8 @@ type Paster struct {
 	pasteKey   string
 	kb         uinput.Keyboard // nil if /dev/uinput is unavailable
 	kbKeys     []int           // evdev codes for the paste keystroke; nil = use xdotool
-	autoPaste  atomic.Bool // Type() also sends the paste keystroke; false = clipboard only (live: tray toggle)
-	conn       *dbus.Conn  // kept alive for Klipper; nil otherwise
+	autoPaste  atomic.Bool     // Type() also sends the paste keystroke; false = clipboard only (live: tray toggle)
+	conn       *dbus.Conn      // kept alive for Klipper; nil otherwise
 }
 
 var (

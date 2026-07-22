@@ -368,10 +368,13 @@ func (d *Daemon) stop(lang string) string {
 
 	<-d.modelReady // wait for the model to load if it is still loading
 	t0 := time.Now()
-	// Seed whisper with the previous dictation so short, ambiguous phrases lean
-	// toward the active vocabulary/topic. Built before hist.Add below, so it
-	// uses prior history only (not the text being transcribed right now).
-	text, err := d.ctx.Transcribe(samples, d.lang, threads, d.whisperPrompt())
+	// Seed whisper with the previous SAME-language dictation so short, ambiguous
+	// phrases lean toward the active vocabulary/topic. Built before hist.Add below,
+	// so it uses prior history only (not the text being transcribed right now).
+	// Seeding across languages corrupts the output script (a Cyrillic prompt makes
+	// an English dictation come out transliterated), so only same-language entries
+	// qualify — see whisperPrompt.
+	text, err := d.ctx.Transcribe(samples, d.lang, threads, d.whisperPrompt(d.lang))
 	dur := time.Since(t0)
 	if err != nil {
 		d.ind.Hide()
@@ -383,7 +386,7 @@ func (d *Daemon) stop(lang string) string {
 	}
 	fmt.Fprintf(os.Stderr, "[vole] %s | audio %.1fs | transcribed in %.2fs | peak=%.3f | %q\n",
 		d.lang, audioSec, dur.Seconds(), peak, text)
-	d.hist.Add(text) // record the raw dictation (tray menu + history file)
+	d.hist.Add(text, d.lang) // record the raw dictation (tray menu + history file)
 	// Optional post-processing: pipe the raw transcript through a script and use
 	// its stdout as the improved text. On any error or empty output we fall back
 	// to the raw transcript, so a broken script never blocks dictation. While the
@@ -405,7 +408,7 @@ func (d *Daemon) stop(lang string) string {
 	}
 	improved, postOK := d.postProcess(text)
 	if postOK {
-		d.hist.Add(improved) // improved text as a separate, newest history entry
+		d.hist.Add(improved, d.lang) // improved text as a separate, newest history entry
 	}
 	if postActive {
 		d.ind.Hide()
@@ -478,25 +481,34 @@ func (d *Daemon) postProcess(text string) (string, bool) {
 	return improved, true
 }
 
-// whisperPrompt returns a short initial_prompt for whisper — the previous
-// dictation, trimmed — when whisper_prompt is enabled; "" otherwise. It uses the
-// history *before* the current dictation is recorded, so it never seeds the
-// decoder with the very text it is about to transcribe.
-func (d *Daemon) whisperPrompt() string {
-	if !d.cfg.WhisperPrompt || d.hist == nil {
+// whisperPrompt returns a short initial_prompt for whisper — the most recent
+// prior dictation in the SAME language, trimmed — when whisper_prompt is
+// enabled; "" otherwise. Seeding across languages corrupts the output script
+// (a Cyrillic prompt makes an English dictation come out transliterated), so
+// only same-language entries qualify. It uses the history *before* the current
+// dictation is recorded, so it never seeds the decoder with the very text it is
+// about to transcribe. Entries without a recorded language (e.g. from before
+// this field existed) are skipped, since their language is unknown.
+func (d *Daemon) whisperPrompt(lang string) string {
+	if !d.cfg.WhisperPrompt || d.hist == nil || lang == "" {
 		return ""
 	}
-	items := d.hist.Items()
-	if len(items) == 0 {
-		return ""
+	for _, e := range d.hist.Items() { // newest first
+		if e.Lang != lang {
+			continue
+		}
+		p := strings.TrimSpace(e.Text)
+		if p == "" {
+			continue
+		}
+		// one prior utterance, capped to a sentence-ish length: whisper's
+		// initial_prompt is a token seed, not a context window.
+		if r := []rune(p); len(r) > 200 {
+			p = string(r[:200])
+		}
+		return p
 	}
-	// one prior utterance, capped to a sentence-ish length: whisper's
-	// initial_prompt is a token seed, not a context window.
-	p := strings.TrimSpace(items[0].Text)
-	if r := []rune(p); len(r) > 200 {
-		p = string(r[:200])
-	}
-	return p
+	return ""
 }
 
 // copyTwo puts raw (and, when postOK, improved) on the clipboard without pasting

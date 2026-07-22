@@ -14,8 +14,9 @@ import (
 
 // Entry is one recorded dictation.
 type Entry struct {
-	Time int64  `json:"ts"`   // unix seconds
-	Text string `json:"text"` // the transcribed text
+	Time int64  `json:"ts"`             // unix seconds
+	Text string `json:"text"`           // the transcribed text
+	Lang string `json:"lang,omitempty"` // the language id of the dictation (e.g. "ru", "en")
 }
 
 // Store is a capped ring of recent dictations (newest first), persisted as JSONL.
@@ -57,13 +58,14 @@ func (s *Store) load() {
 }
 
 // Add records text as the newest entry, caps the ring, persists, and notifies.
-// Empty or whitespace-only text is ignored.
-func (s *Store) Add(text string) {
+// Empty or whitespace-only text is ignored. lang is the dictation's language id
+// (e.g. "ru", "en"), stored so whisper can be seeded with a same-language prompt.
+func (s *Store) Add(text, lang string) {
 	if strings.TrimSpace(text) == "" {
 		return
 	}
 	s.mu.Lock()
-	s.items = append([]Entry{{Time: time.Now().Unix(), Text: text}}, s.items...)
+	s.items = append([]Entry{{Time: time.Now().Unix(), Text: text, Lang: lang}}, s.items...)
 	if len(s.items) > s.max {
 		s.items = s.items[:s.max]
 	}

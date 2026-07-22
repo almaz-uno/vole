@@ -50,6 +50,18 @@ auto_paste: true
 # post-processing script. Default on.
 # whisper_prompt: true
 
+# Translate mode for the alt/shift language (the "dictate-alt" shortcut). When
+# on, that shortcut translates speech into English: whisper transcribes with
+# the PRIMARY language pinned (the "dictate" language — e.g. Russian), then the
+# post-process script translates the clean source transcript to English (it is
+# invoked with VOLE_PP_TRANSLATE=1 and switches to a translate prompt). The
+# "dictate" shortcut is unaffected — it still transcribes in its own language.
+# Requires a post-process script that honors VOLE_PP_TRANSLATE (see
+# PostProcessing/Examples). In translate mode no initial_prompt is seeded and the
+# script runs even if the post-process tray toggle is off (translate needs it).
+# Default off.
+# translate: false
+
 # PTT hotkey: hold to record, release to transcribe and inject.
 #
 # X11: while the key is held, Shift switches the language on the fly

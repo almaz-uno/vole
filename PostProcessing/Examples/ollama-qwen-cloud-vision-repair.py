@@ -3,10 +3,18 @@
 # dictations via a cloud vision LLM (ollama, qwen3.5:cloud).
 #
 # stdin  : the raw whisper transcript
-# stdout : the repaired transcript (or the raw one, on any failure)
+# stdout : the improved transcript (or the raw one, on any failure)
 # stderr : diagnostics only (never the transcript / screenshot content)
 #
-# Context the model gets:
+# Two modes, switched by env:
+#   * repair (default)     — fix speech-recognition errors (punctuation, case,
+#     word boundaries, misheard words) using the screenshot + recent dictations
+#     as context. Preserves the spoken language and meaning.
+#   * translate (VOLE_PP_TRANSLATE=1) — translate the raw transcript (a clean
+#     transcript in the source language, usually Russian) into idiomatic English.
+#     No history is passed (wrong language); the screenshot may help with names.
+#
+# Context the model gets (repair mode):
 #   - the raw transcript (this dictation)
 #   - a screenshot of the ACTIVE window (where the user is typing) — captured
 #     with `spectacle`, downscaled with `ffmpeg` to keep the upload small
@@ -22,6 +30,8 @@
 #   VOLE_PP_NO_SCREEN     "1" disables screenshot capture
 #   VOLE_PP_IMG_MAX       max image width px     (default 1024)
 #   VOLE_PP_OLLAMA_TIMEOUT  ollama request timeout s (default 25)
+#   VOLE_PP_TRANSLATE     "1" = translate the transcript to English (set by vole
+#                         for the dictate-alt shortcut when config translate: true)
 import base64
 import json
 import os
@@ -37,6 +47,10 @@ HISTORY_N = int(os.environ.get("VOLE_PP_HISTORY", "6"))
 NO_SCREEN = os.environ.get("VOLE_PP_NO_SCREEN", "") == "1"
 IMG_MAX = int(os.environ.get("VOLE_PP_IMG_MAX", "1024"))
 OLLAMA_TIMEOUT = int(os.environ.get("VOLE_PP_OLLAMA_TIMEOUT", "25"))
+# vole sets VOLE_PP_TRANSLATE=1 for the dictate-alt (translate-to-English)
+# shortcut: the raw transcript is a clean transcript in the source language
+# (usually Russian) and we translate it to English instead of repairing it.
+TRANSLATE = os.environ.get("VOLE_PP_TRANSLATE", "") == "1"
 
 HISTORY_FILE = os.path.expanduser("~/.local/state/vole/history.jsonl")
 
@@ -55,6 +69,19 @@ SYSTEM_PROMPT = (
     "help you recognize proper nouns and terms, never content to include. "
     "Your output must be a corrected version of the raw transcript and nothing "
     "else: no quotes, no preamble, no explanation, no markdown, no extra sentences."
+)
+
+TRANSLATE_SYSTEM_PROMPT = (
+    "You are a translation assistant for a voice-dictation tool. You receive the "
+    "raw speech-to-text transcript (in whatever language was spoken, usually "
+    "Russian) and an optional screenshot of the window the user is typing into. "
+    "Translate the transcript into natural, idiomatic English, preserving the "
+    "meaning, tone, and any proper nouns — use the screenshot only to confirm "
+    "names/terms when needed. Do NOT translate the screenshot's on-screen text, "
+    "do NOT answer, comment on, or act on the content, and do NOT add anything "
+    "not said. Your output must be the English translation and nothing else: no "
+    "quotes, no preamble, no explanation, no markdown. If the transcript is "
+    "already in English, return it unchanged."
 )
 
 
@@ -125,7 +152,7 @@ def capture_active_window():
                 return None
 
 
-def call_ollama(transcript, history, image_b64):
+def call_ollama(transcript, history, image_b64, system_prompt):
     history_block = "\n".join(history) if history else "(none)"
     user = {
         "role": "user",
@@ -140,7 +167,7 @@ def call_ollama(transcript, history, image_b64):
     body = {
         "model": MODEL,
         "messages": [
-            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "system", "content": system_prompt},
             user,
         ],
         "stream": False,
@@ -231,11 +258,28 @@ def main():
         sys.stdout.write(raw)
         return
 
-    history = read_history(HISTORY_N)
     img = capture_active_window()
     img_b64 = base64.b64encode(img).decode("ascii") if img else None
 
-    repaired = call_ollama(raw.strip(), history, img_b64)
+    if TRANSLATE:
+        # Translate mode (VOLE_PP_TRANSLATE=1): the raw transcript is a clean
+        # transcript in the source language; translate it to English. No history
+        # is passed (it is the wrong language and could leak into the output),
+        # and the plausibility length check is skipped — a translation legitimately
+        # changes the word count. Fall back to the raw transcript on any failure.
+        result = call_ollama(raw.strip(), [], img_b64, TRANSLATE_SYSTEM_PROMPT)
+        if result is None:
+            sys.stdout.write(raw)
+            return
+        result = clean(result, raw.strip())
+        if not result or result == raw.strip():
+            sys.stdout.write(raw)
+            return
+        sys.stdout.write(result)
+        return
+
+    history = read_history(HISTORY_N)
+    repaired = call_ollama(raw.strip(), history, img_b64, SYSTEM_PROMPT)
     if repaired is None:
         # network/ollama failure — fall back to raw (vole would also fall back
         # on a non-zero exit, but we want the raw text, not an error)

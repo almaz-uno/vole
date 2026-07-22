@@ -77,7 +77,7 @@ func (c *Context) Transcribe(samples []float32, lang string, threads int, prompt
 	params.print_progress = cbool(false)
 	params.print_realtime = cbool(false)
 	params.print_special = cbool(false)
-	params.translate = cbool(false)
+	params.translate = cbool(false)  // transcription task (whisper's translate task is unreliable on the turbo model — translation is done by the post-process LLM instead)
 	params.no_context = cbool(true)   // single pass — no prior context needed
 	params.suppress_nst = cbool(true) // suppress non-speech tokens (fewer hallucinations)
 

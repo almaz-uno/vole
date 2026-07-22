@@ -34,6 +34,7 @@ type Config struct {
 	PostProcessOn      bool    `yaml:"postprocess_on"`      // run post-processing at startup (runtime-toggled in the tray); default false
 	PostProcessTimeout int     `yaml:"postprocess_timeout"` // seconds to let the post-process script run before it is killed (default 30)
 	WhisperPrompt      bool    `yaml:"whisper_prompt"`      // seed whisper with the last dictation as initial_prompt (steadies short phrases); default true
+	Translate          bool    `yaml:"translate"`           // the alt/shift (dictate-alt) language translates speech to English: whisper transcribes with the primary (dictate) language pinned and the post-process LLM translates the clean source transcript to English; only meaningful with lang_shift: en and a post-process script. Default false
 	HistorySize        int     `yaml:"history_size"`        // dictations kept in the history / tray menu
 	HistoryFile        string  `yaml:"history_file"`        // path to the dictation history (JSONL)
 	DebugRecord        string  `yaml:"debug_record"`        // debug: dump raw recordings near this WAV path (empty = off)

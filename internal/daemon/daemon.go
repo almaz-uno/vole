@@ -368,13 +368,26 @@ func (d *Daemon) stop(lang string) string {
 
 	<-d.modelReady // wait for the model to load if it is still loading
 	t0 := time.Now()
-	// Seed whisper with the previous SAME-language dictation so short, ambiguous
-	// phrases lean toward the active vocabulary/topic. Built before hist.Add below,
-	// so it uses prior history only (not the text being transcribed right now).
-	// Seeding across languages corrupts the output script (a Cyrillic prompt makes
-	// an English dictation come out transliterated), so only same-language entries
-	// qualify — see whisperPrompt.
-	text, err := d.ctx.Transcribe(samples, d.lang, threads, d.whisperPrompt(d.lang))
+	// Translate mode: the alt/shift language (dictate-alt) turns speech into
+	// English. whisper's own translate task is unreliable on the turbo model, and
+	// so is its language auto-detection with VAD (both return empty), so instead we
+	// transcribe with the PRIMARY language pinned (the "dictate" language — e.g.
+	// Russian, which is what the user actually speaks) and hand the clean source
+	// transcript to the post-process LLM to translate to English. In that mode we
+	// seed no initial_prompt (an English seed corrupts a non-English transcript,
+	// and a stale non-English en-history entry would corrupt it too) and the
+	// translate step runs the post-process script with VOLE_PP_TRANSLATE=1 — the
+	// script switches from repair to translate. Otherwise seed whisper with the
+	// previous same-language dictation to steady short, ambiguous phrases.
+	translateMode := d.cfg.Translate && d.cfg.Hotkey.LangShift == "en" && d.lang == "en"
+	transcribeLang := d.lang
+	prompt := ""
+	if translateMode {
+		transcribeLang = d.cfg.Hotkey.Lang // pin the primary language (auto-detect returns empty on the turbo model)
+	} else {
+		prompt = d.whisperPrompt(d.lang)
+	}
+	text, err := d.ctx.Transcribe(samples, transcribeLang, threads, prompt)
 	dur := time.Since(t0)
 	if err != nil {
 		d.ind.Hide()
@@ -386,15 +399,22 @@ func (d *Daemon) stop(lang string) string {
 	}
 	fmt.Fprintf(os.Stderr, "[vole] %s | audio %.1fs | transcribed in %.2fs | peak=%.3f | %q\n",
 		d.lang, audioSec, dur.Seconds(), peak, text)
-	d.hist.Add(text, d.lang) // record the raw dictation (tray menu + history file)
+	// In translate mode the raw transcript is the source language (e.g. Russian)
+	// but d.lang is "en"; keep it out of the en-history (only the English result
+	// goes in) to avoid polluting the same-language prompt seed and the menu.
+	if !translateMode {
+		d.hist.Add(text, d.lang) // record the raw dictation (tray menu + history file)
+	}
 	// Optional post-processing: pipe the raw transcript through a script and use
 	// its stdout as the improved text. On any error or empty output we fall back
-	// to the raw transcript, so a broken script never blocks dictation. While the
+	// to the raw transcript, so a broken script never blocks dictation. In
+	// translate mode the script is the translator (VOLE_PP_TRANSLATE=1), so it
+	// runs regardless of the post-process toggle — translate needs it. While the
 	// script runs, switch the indicator to a distinct "post" state (a blue tray
 	// dot / blue overlay icon) so the user sees the hook is active even though
-	// recognition is finished — then drop it before injection so a clipboard
-	// toast (confirmCopied) behaves exactly as on the non-post path.
-	postActive := text != "" && d.postOn.Load() && d.postScript != ""
+	// recognition is finished — then drop it before injection so a clipboard toast
+	// (confirmCopied) behaves as on the non-post path.
+	postActive := text != "" && d.postScript != "" && (translateMode || d.postOn.Load())
 	if postActive {
 		if d.tr != nil {
 			d.tr.SetState(tray.StatePostProcessing)
@@ -406,7 +426,14 @@ func (d *Daemon) stop(lang string) string {
 			d.tr.SetState(tray.StateIdle)
 		}
 	}
-	improved, postOK := d.postProcess(text)
+	var improved string
+	postOK := false
+	if translateMode {
+		// translate needs the LLM regardless of the post-process toggle
+		improved, postOK = d.postProcess(text, []string{"VOLE_PP_TRANSLATE=1"}, true)
+	} else {
+		improved, postOK = d.postProcess(text, nil, false)
+	}
 	if postOK {
 		d.hist.Add(improved, d.lang) // improved text as a separate, newest history entry
 	}
@@ -460,19 +487,25 @@ func (d *Daemon) stop(lang string) string {
 	return text
 }
 
-// postProcess runs the configured script on the raw transcript when
-// post-processing is enabled, returning the improved text. It returns
-// ("", false) when post-processing is off, no script is configured, the input is
-// empty, or the script fails — in all these cases the caller uses the raw text.
-func (d *Daemon) postProcess(text string) (string, bool) {
-	if text == "" || !d.postOn.Load() || d.postScript == "" {
+// postProcess runs the configured script on the raw transcript, returning the
+// improved text. env adds extra environment variables for the script (used in
+// translate mode to pass VOLE_PP_TRANSLATE=1). force runs the script even when
+// the post-process toggle is off — used in translate mode, where the script is
+// the translator, not an optional repair. It returns ("", false) when no script
+// is configured, the input is empty, the toggle is off (and force is false), or
+// the script fails — in all these cases the caller uses the raw text.
+func (d *Daemon) postProcess(text string, env []string, force bool) (string, bool) {
+	if text == "" || d.postScript == "" {
+		return "", false
+	}
+	if !force && !d.postOn.Load() {
 		return "", false
 	}
 	to := time.Duration(d.cfg.PostProcessTimeout) * time.Second
 	if to <= 0 {
 		to = 30 * time.Second
 	}
-	improved, err := postprocess.RunTimeout(d.postScript, text, to)
+	improved, err := postprocess.RunTimeoutEnv(d.postScript, text, to, env)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "vole daemon:", err)
 		return "", false

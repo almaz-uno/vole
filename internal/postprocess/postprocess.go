@@ -9,6 +9,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 	"syscall"
@@ -37,10 +38,18 @@ func Run(script, text string) (string, error) {
 
 // RunTimeout is Run with an explicit deadline, exposed for tests.
 func RunTimeout(script, text string, timeout time.Duration) (string, error) {
+	return RunTimeoutEnv(script, text, timeout, nil)
+}
+
+// RunTimeoutEnv is RunTimeout with extra environment variables appended to the
+// daemon's environment (e.g. VOLE_PP_TRANSLATE=1 to switch the script into its
+// translate-to-English mode). env may be nil.
+func RunTimeoutEnv(script, text string, timeout time.Duration, env []string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, script)
+	cmd.Env = append(os.Environ(), env...)
 	cmd.Stdin = strings.NewReader(text)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout

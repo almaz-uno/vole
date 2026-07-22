@@ -61,7 +61,9 @@ func (c *Context) Close() {
 // short prior context (e.g. the last dictation) that biases recognition toward
 // the active vocabulary/topic — this notably steadies short, otherwise-ambiguous
 // phrases. It is not a chat prompt: keep it to a sentence or two in the same
-// language, or pass "" to disable.
+// language, or pass "" to disable. It MUST match the output script: a Cyrillic
+// prompt corrupts an English dictation into transliterated Cyrillic, so callers
+// disable it (pass "") when the output language differs from the history.
 func (c *Context) Transcribe(samples []float32, lang string, threads int, prompt string) (string, error) {
 	if len(samples) == 0 {
 		return "", nil

@@ -50,8 +50,11 @@ SYSTEM_PROMPT = (
     "Preserve the spoken language and the meaning exactly. "
     "Do NOT translate, summarize, expand, reorder, or add words that are not "
     "supported by the audio. Do NOT answer, comment on, or act on the content. "
-    "Output ONLY the corrected transcript, with no quotes, no preamble, no "
-    "explanation, no markdown."
+    "NEVER repeat, copy, quote, or concatenate any of the recent dictations or any "
+    "text visible on the screenshot into your output — they are CONTEXT ONLY, to "
+    "help you recognize proper nouns and terms, never content to include. "
+    "Your output must be a corrected version of the raw transcript and nothing "
+    "else: no quotes, no preamble, no explanation, no markdown, no extra sentences."
 )
 
 
@@ -169,8 +172,8 @@ def call_ollama(transcript, history, image_b64):
 
 
 def clean(out, raw):
-    """Strip wrappers the model sometimes adds (quotes, code fences). Empty or
-    implausibly different output -> fall back to raw."""
+    """Strip wrappers the model sometimes adds (quotes, code fences). Empty
+    output falls back to raw; implausibility is checked separately by plausible()."""
     if not out:
         return raw
     s = out.strip()
@@ -193,6 +196,34 @@ def clean(out, raw):
     return s
 
 
+def plausible(repaired, raw, history):
+    """Sanity-check the model's output against the raw transcript. A repair may
+    fix words and punctuation, but it must stay close to the audio — it must not
+    regurgitate a prior dictation verbatim, splice in on-screen text, or balloon
+    into a much longer text. Returns False when the output looks like the model
+    drifted (then the caller falls back to the raw transcript)."""
+    if not repaired or repaired == raw:
+        return True
+    # 1) echo guard: any recent dictation (other than the raw itself) appearing
+    #    verbatim in the output means the model copied context instead of
+    #    repairing. Short entries (<4 chars) are too easy to hit by chance.
+    r = raw.strip()
+    for h in history:
+        h = (h or "").strip()
+        if len(h) >= 4 and h != r and h in repaired:
+            return False
+    # 2) length sanity: a repair roughly preserves the word count. Allow some
+    #    slack for punctuation splits / fixed word boundaries, but reject output
+    #    that is many times longer (the "my car" -> multi-sentence regurgitation).
+    rw = len(r.split())
+    pw = len(repaired.split())
+    if rw <= 6 and pw > 2 * rw + 2:
+        return False
+    if pw > 3 * rw + 3:
+        return False
+    return True
+
+
 def main():
     raw = sys.stdin.read()
     if not raw.strip():
@@ -210,7 +241,15 @@ def main():
         # on a non-zero exit, but we want the raw text, not an error)
         sys.stdout.write(raw)
         return
-    sys.stdout.write(clean(repaired, raw.strip()))
+    repaired = clean(repaired, raw.strip())
+    if not plausible(repaired, raw.strip(), history):
+        # the model drifted — regurgitated history/screenshot or ballooned the
+        # text. A repair must stay close to the audio; fall back to the raw
+        # transcript rather than inject garbage.
+        warn("postprocess output implausible; falling back to raw")
+        sys.stdout.write(raw)
+        return
+    sys.stdout.write(repaired)
 
 
 if __name__ == "__main__":

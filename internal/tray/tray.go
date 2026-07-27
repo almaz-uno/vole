@@ -41,6 +41,7 @@ type Tray struct {
 	mToggle                         *systray.MenuItem
 	mAutoPaste                      *systray.MenuItem // "Auto-paste" checkbox; nil if not applicable
 	mPostProcess                    *systray.MenuItem // "Post-process" checkbox; nil if not applicable
+	mEnglishInput                   *systray.MenuItem // "English input" checkbox; always shown
 
 	onHistory func(idx int) // invoked with the index of a clicked history entry
 
@@ -57,10 +58,11 @@ type Tray struct {
 // pass nil to omit the item (e.g. the non-paste injector). onPostProcess, if
 // non-nil, adds a "Post-process" checkbox (initial state postProcessOn) that runs
 // it on each click; pass nil to omit the item (e.g. no post-process script
-// configured). version is the build version, shown as a disabled menu title and
-// in the tooltip. The returned Tray can be updated immediately, before the tray
-// host is ready.
-func Run(onToggle, onQuit, onTap func(), onHistory func(idx int), historySize int, onAutoPaste func(), autoPasteOn bool, onPostProcess func(), postProcessOn bool, version string) *Tray {
+// configured). onEnglishInput adds an "English input" checkbox (initial state
+// englishInputOn) that runs it on each click; pass nil to omit. version is the
+// build version, shown as a disabled menu title and in the tooltip. The returned
+// Tray can be updated immediately, before the tray host is ready.
+func Run(onToggle, onQuit, onTap func(), onHistory func(idx int), historySize int, onAutoPaste func(), autoPasteOn bool, onPostProcess func(), postProcessOn bool, onEnglishInput func(), englishInputOn bool, version string) *Tray {
 	t := &Tray{
 		disabled:  pngCircle(colDisabled),
 		idle:      pngCircle(colIdle),
@@ -103,6 +105,12 @@ func Run(onToggle, onQuit, onTap func(), onHistory func(idx int), historySize in
 				"Run a script on each dictation to clean up the transcript", postProcessOn)
 			postProcessCh = t.mPostProcess.ClickedCh
 		}
+		var englishInputCh <-chan struct{}
+		if onEnglishInput != nil {
+			t.mEnglishInput = systray.AddMenuItemCheckbox("English input",
+				"Shift-combo: transcribe English speech (off: translate Russian→English)", englishInputOn)
+			englishInputCh = t.mEnglishInput.ClickedCh
+		}
 		mQuit := systray.AddMenuItem("Quit", "Stop vole")
 		go func() {
 			for {
@@ -116,6 +124,10 @@ func Run(onToggle, onQuit, onTap func(), onHistory func(idx int), historySize in
 				case <-postProcessCh: // nil when omitted: this case never fires
 					if onPostProcess != nil {
 						onPostProcess()
+					}
+				case <-englishInputCh: // nil when omitted: this case never fires
+					if onEnglishInput != nil {
+						onEnglishInput()
 					}
 				case <-mQuit.ClickedCh:
 					systray.Quit()
@@ -223,6 +235,18 @@ func (t *Tray) SetPostProcess(on bool) {
 		t.mPostProcess.Check()
 	} else {
 		t.mPostProcess.Uncheck()
+	}
+}
+
+// SetEnglishInput reflects the English-input toggle state in the menu checkbox.
+func (t *Tray) SetEnglishInput(on bool) {
+	if t.mEnglishInput == nil {
+		return
+	}
+	if on {
+		t.mEnglishInput.Check()
+	} else {
+		t.mEnglishInput.Uncheck()
 	}
 }
 

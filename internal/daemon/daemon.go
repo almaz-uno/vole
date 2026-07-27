@@ -42,6 +42,8 @@ type Daemon struct {
 	postOn     atomic.Bool // post-processing runtime toggle (tray checkbox); resets to cfg.PostProcessOn on restart
 	postScript string      // configured post-processing script path; empty = feature unavailable
 
+	englishInput atomic.Bool // English-input runtime toggle (tray checkbox); overrides base/shift language and disables translate-mode while on; resets to cfg.EnglishInput on restart
+
 	ctx        *whisper.Context
 	modelReady chan struct{} // closed once the model is loaded
 
@@ -77,6 +79,7 @@ func Run(version string) error {
 	if cfg.PostProcess != "" {
 		d.postOn.Store(cfg.PostProcessOn)
 	}
+	d.englishInput.Store(cfg.EnglishInput)
 
 	// pick the input/output backend (X11 or Wayland)
 	backend := platform.Detect(platform.Backend(cfg.Backend))
@@ -100,7 +103,8 @@ func Run(version string) error {
 	if cfg.PostProcess != "" {
 		onPostProcess = d.togglePostProcess
 	}
-	d.tr = tray.Run(d.toggleEnabled, func() { os.Exit(0) }, d.toggleRecording, d.pasteHistory, cfg.HistorySize, onAutoPaste, cfg.AutoPaste, onPostProcess, d.postOn.Load(), d.version)
+	onEnglishInput := d.toggleEnglishInput
+	d.tr = tray.Run(d.toggleEnabled, func() { os.Exit(0) }, d.toggleRecording, d.pasteHistory, cfg.HistorySize, onAutoPaste, cfg.AutoPaste, onPostProcess, d.postOn.Load(), onEnglishInput, d.englishInput.Load(), d.version)
 	d.hist.OnChange(func(entries []history.Entry) {
 		texts := make([]string, len(entries))
 		for i, e := range entries {
@@ -314,6 +318,26 @@ func (d *Daemon) setLang(lang string) {
 	d.ind.SetLang(lang)
 }
 
+// toggleEnglishInput flips the English-input mode at runtime (via the tray
+// checkbox). It only affects the Shift/dictate-alt combo (Super+Control+Shift+D):
+// while off, that combo translates Russian speech → English (the default
+// translate mode); while on, it transcribes English speech → English text (with
+// the repair post-process hook) instead. The base combo (Super+Control+D) is
+// always Russian → Russian and is not affected. In-memory — it resets to the
+// configured english_input on restart.
+func (d *Daemon) toggleEnglishInput() {
+	on := !d.englishInput.Load()
+	d.englishInput.Store(on)
+	if d.tr != nil {
+		d.tr.SetEnglishInput(on)
+	}
+	if on {
+		notify("🎤 vole", "English input on — Shift+combo transcribes English")
+	} else {
+		notify("🎤 vole", "English input off — Shift+combo translates to English")
+	}
+}
+
 // feedLevel pumps the signal level from the recorder into the indicator while recording.
 func (d *Daemon) feedLevel(stop chan struct{}) {
 	t := time.NewTicker(33 * time.Millisecond)
@@ -379,7 +403,7 @@ func (d *Daemon) stop(lang string) string {
 	// translate step runs the post-process script with VOLE_PP_TRANSLATE=1 — the
 	// script switches from repair to translate. Otherwise seed whisper with the
 	// previous same-language dictation to steady short, ambiguous phrases.
-	translateMode := d.cfg.Translate && d.cfg.Hotkey.LangShift == "en" && d.lang == "en"
+	translateMode := d.cfg.Translate && d.cfg.Hotkey.LangShift == "en" && d.lang == "en" && !d.englishInput.Load()
 	transcribeLang := d.lang
 	prompt := ""
 	if translateMode {

@@ -30,8 +30,15 @@
 #   VOLE_PP_NO_SCREEN     "1" disables screenshot capture
 #   VOLE_PP_IMG_MAX       max image width px     (default 1024)
 #   VOLE_PP_OLLAMA_TIMEOUT  ollama request timeout s (default 25)
+#   VOLE_PP_GLOSSARY      glossary path (default ~/.config/vole/glossary.txt)
 #   VOLE_PP_TRANSLATE     "1" = translate the transcript to English (set by vole
 #                         for the dictate-alt shortcut when config translate: true)
+#
+# Glossary (optional): a plain-text list of domain terms the model must not
+# "correct" away — proper nouns, project names, jargon. Read fresh on every run,
+# so edits apply from the next dictation without restarting vole. One entry per
+# line: "term" pins a spelling, "heard -> term" maps a known mishearing, "#"
+# comments. Missing file = feature off.
 import base64
 import json
 import os
@@ -53,6 +60,12 @@ OLLAMA_TIMEOUT = int(os.environ.get("VOLE_PP_OLLAMA_TIMEOUT", "25"))
 TRANSLATE = os.environ.get("VOLE_PP_TRANSLATE", "") == "1"
 
 HISTORY_FILE = os.path.expanduser("~/.local/state/vole/history.jsonl")
+GLOSSARY_FILE = os.path.expanduser(
+    os.environ.get("VOLE_PP_GLOSSARY", "~/.config/vole/glossary.txt")
+)
+# Cap the glossary block: it is a hint list, not a dictionary — an oversized one
+# dilutes attention and eats context on every single dictation.
+GLOSSARY_MAX = 120
 
 SYSTEM_PROMPT = (
     "You are a transcription-repair assistant for a voice-dictation tool. "
@@ -87,6 +100,58 @@ TRANSLATE_SYSTEM_PROMPT = (
 
 def warn(msg):
     print(f"vole-postprocess: {msg}", file=sys.stderr)
+
+
+def read_glossary():
+    """The glossary as (terms, corrections), or ([], []) if there is no file.
+
+    terms are canonical spellings to preserve; corrections are (heard, term)
+    pairs from "heard -> term" lines. Read on every run — editing the file takes
+    effect from the next dictation, with no daemon restart."""
+    try:
+        with open(GLOSSARY_FILE, "r", encoding="utf-8") as f:
+            lines = f.readlines()
+    except FileNotFoundError:
+        return [], []
+    except OSError as e:
+        warn(f"glossary read failed: {e}")
+        return [], []
+    terms, corrections = [], []
+    for line in lines:
+        line = line.split("#", 1)[0].strip()
+        if not line:
+            continue
+        if "->" in line:
+            heard, _, term = line.partition("->")
+            heard, term = heard.strip(), term.strip()
+            if heard and term:
+                corrections.append((heard, term))
+        else:
+            terms.append(line)
+        if len(terms) + len(corrections) >= GLOSSARY_MAX:
+            warn(f"glossary truncated at {GLOSSARY_MAX} entries")
+            break
+    return terms, corrections
+
+
+def glossary_block(terms, corrections):
+    """Render the glossary for the system prompt; "" when it is empty."""
+    if not terms and not corrections:
+        return ""
+    out = (
+        "\n\nGLOSSARY — domain terms and proper nouns from the user's world. "
+        "When the transcript contains something phonetically close to one of "
+        "these, it IS that term: use the spelling given here. Never 'correct' a "
+        "glossary term into an ordinary word that merely sounds similar. This "
+        "list is a spelling reference only — never insert a term that the audio "
+        "does not support, and never list or mention the glossary in your output."
+    )
+    if terms:
+        out += "\nTerms: " + ", ".join(terms)
+    if corrections:
+        pairs = "; ".join(f'"{h}" means "{t}"' for h, t in corrections)
+        out += "\nKnown mishearings: " + pairs
+    return out
 
 
 def read_history(n):
@@ -260,6 +325,9 @@ def main():
 
     img = capture_active_window()
     img_b64 = base64.b64encode(img).decode("ascii") if img else None
+    # The glossary helps both modes: repair must not "correct" domain terms away,
+    # and translate must carry proper nouns across unchanged.
+    glossary = glossary_block(*read_glossary())
 
     if TRANSLATE:
         # Translate mode (VOLE_PP_TRANSLATE=1): the raw transcript is a clean
@@ -267,7 +335,7 @@ def main():
         # is passed (it is the wrong language and could leak into the output),
         # and the plausibility length check is skipped — a translation legitimately
         # changes the word count. Fall back to the raw transcript on any failure.
-        result = call_ollama(raw.strip(), [], img_b64, TRANSLATE_SYSTEM_PROMPT)
+        result = call_ollama(raw.strip(), [], img_b64, TRANSLATE_SYSTEM_PROMPT + glossary)
         if result is None:
             sys.stdout.write(raw)
             return
@@ -279,7 +347,7 @@ def main():
         return
 
     history = read_history(HISTORY_N)
-    repaired = call_ollama(raw.strip(), history, img_b64, SYSTEM_PROMPT)
+    repaired = call_ollama(raw.strip(), history, img_b64, SYSTEM_PROMPT + glossary)
     if repaired is None:
         # network/ollama failure — fall back to raw (vole would also fall back
         # on a non-zero exit, but we want the raw text, not an error)

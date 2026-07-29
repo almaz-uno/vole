@@ -34,16 +34,17 @@ const ownDeadline = 500 * time.Millisecond
 // VTE/xterm terminals). Without PRIMARY a Shift+Insert into a terminal would
 // re-insert the last mouse selection instead of the dictated text.
 type Paster struct {
-	setClip    func(text string) error // set CLIPBOARD
-	setPrimary func(text string) error // set PRIMARY (nil if the backend can't)
-	getClip    func() (string, error)  // read CLIPBOARD back (nil if unreadable)
-	getPrimary func() (string, error)  // read PRIMARY back (nil if unreadable)
-	clipName   string
-	pasteKey   string
-	kb         uinput.Keyboard // nil if /dev/uinput is unavailable
-	kbKeys     []int           // evdev codes for the paste keystroke; nil = use xdotool
-	autoPaste  atomic.Bool     // Type() also sends the paste keystroke; false = clipboard only (live: tray toggle)
-	conn       *dbus.Conn      // kept alive for Klipper; nil otherwise
+	setClip     func(text string) error // set CLIPBOARD
+	setPrimary  func(text string) error // set PRIMARY (nil if the backend can't)
+	getClip     func() (string, error)  // read CLIPBOARD back (nil if unreadable)
+	getPrimary  func() (string, error)  // read PRIMARY back (nil if unreadable)
+	clipName    string
+	clipHistory bool // the backend keeps a clipboard history (Klipper) — see CopyHistory
+	pasteKey    string
+	kb          uinput.Keyboard // nil if /dev/uinput is unavailable
+	kbKeys      []int           // evdev codes for the paste keystroke; nil = use xdotool
+	autoPaste   atomic.Bool     // Type() also sends the paste keystroke; false = clipboard only (live: tray toggle)
+	conn        *dbus.Conn      // kept alive for Klipper; nil otherwise
 }
 
 var (
@@ -127,7 +128,7 @@ func (p *Paster) detectClipboard() {
 		var has bool
 		err := conn.BusObject().Call("org.freedesktop.DBus.NameHasOwner", 0, "org.kde.klipper").Store(&has)
 		if err == nil && has {
-			p.conn, p.clipName = conn, "klipper"
+			p.conn, p.clipName, p.clipHistory = conn, "klipper", true
 			obj := conn.Object("org.kde.klipper", "/klipper")
 			p.setClip = func(text string) error {
 				return obj.Call("org.kde.klipper.klipper.setClipboardContents", 0, text).Err
@@ -197,8 +198,25 @@ func (p *Paster) Insert(text string) error {
 }
 
 // Copy puts text on the clipboard without pasting — used for tray-click
-// dictation, where the focus is on the tray rather than a text field.
+// dictation, where the focus is on the tray rather than a text field. Like
+// Insert it waits for the selection-owner handoff, so a following Copy/Insert
+// can never be overtaken by this one's asynchronous CLI tool.
 func (p *Paster) Copy(text string) error {
+	return p.put(text, false)
+}
+
+// CopyHistory seeds an extra clipboard-history entry that the next Copy/Insert
+// immediately supersedes (the daemon uses it to keep the raw transcript one
+// entry behind the post-processed one). It only does something on a backend with
+// a clipboard history — Klipper, whose DBus setter is synchronous. On the CLI
+// backends (xclip/xsel/wl-copy) there is no history to seed, and the extra
+// asynchronous copy would race the real one for selection ownership: its xclip
+// can win the selection *after* the following Insert already read back its own
+// text and sent the paste keystroke, pasting this text instead. So: no-op.
+func (p *Paster) CopyHistory(text string) error {
+	if !p.clipHistory {
+		return nil
+	}
 	return p.put(text, false)
 }
 
@@ -222,14 +240,16 @@ func (p *Paster) put(text string, paste bool) error {
 			fmt.Fprintf(os.Stderr, "[vole] inject(paste): set primary: %v\n", err)
 		}
 	}
+	// The X11 clipboard is an ownership protocol: the CLI tool acquires the
+	// selection asynchronously, so a keystroke sent immediately can be served by
+	// the previous owner (stale content). Wait until our text is actually served.
+	// This also makes put() ordered with respect to itself: without it, an earlier
+	// call's tool can still win the selection after a later call has published its
+	// own text, so back-to-back copies do not necessarily settle in call order.
+	p.waitOwned(text)
 	if !paste {
 		return nil
 	}
-	// The X11 clipboard is an ownership protocol: the CLI tool acquires the
-	// selection asynchronously, so a keystroke sent immediately can be served by
-	// the previous owner (stale content). Wait until our text is actually served
-	// before pasting.
-	p.waitOwned(text)
 	// Use uinput when available: events go through the kernel input stack directly
 	// to the compositor, so modifier state never leaks into the Wayland session.
 	// Fall back to xdotool (XWayland path) when /dev/uinput is inaccessible.

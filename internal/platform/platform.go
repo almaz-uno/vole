@@ -50,9 +50,14 @@ type Inserter interface {
 
 // Copier is an Injector that can put text on the clipboard without pasting —
 // used for tray-click dictation, where the focus is on the tray, not a field.
+// CopyHistory is the same, but only for backends with a clipboard history
+// (Klipper): it seeds an extra entry that a following Copy/Insert immediately
+// supersedes. Backends without a history implement it as a no-op — on X11 an
+// extra CLI copy would only race the real one for selection ownership.
 type Copier interface {
 	Injector
 	Copy(text string) error
+	CopyHistory(text string) error
 }
 
 // AutoPaster is an Injector whose auto-paste (paste after dictation) can be

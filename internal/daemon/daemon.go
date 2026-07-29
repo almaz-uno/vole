@@ -470,9 +470,9 @@ func (d *Daemon) stop(lang string) string {
 	// tray-click dictation only copies to the clipboard (focus is on the tray);
 	// PTT / socket dictation injects into the focused window — unless auto-paste
 	// is toggled off, when Type() itself only copies (we then confirm it too).
-	// With post-processing on and a clipboard backend, the raw transcript is put
-	// on the clipboard first (preserving it as the previous Klipper entry) and the
-	// improved text is pasted; both also stay in the history.
+	// With post-processing on and a clipboard-history backend, the raw transcript
+	// is seeded first (so it stays as the previous Klipper entry) and the improved
+	// text is pasted; both also stay in the history.
 	var injErr error
 	copier, hasCopier := d.inj.(platform.Copier)
 	switch {
@@ -483,7 +483,7 @@ func (d *Daemon) stop(lang string) string {
 		}
 	case postOK:
 		if hasCopier {
-			_ = copier.Copy(text) // raw → clipboard (previous Klipper entry), no paste
+			_ = copier.CopyHistory(text) // raw as the previous clipboard-history entry; no-op without a history
 		}
 		if ap, ok := d.inj.(platform.AutoPaster); ok && !ap.AutoPaste() {
 			if hasCopier {
@@ -570,16 +570,17 @@ func (d *Daemon) whisperPrompt(lang string) string {
 
 // copyTwo puts raw (and, when postOK, improved) on the clipboard without pasting
 // — used for tray-click dictation, where the focus is on the tray, not a field.
-// The last copy wins, so improved becomes the active selection; raw stays as the
-// previous Klipper entry. The last error is returned.
+// improved becomes the active selection and raw only seeds the previous
+// clipboard-history entry (a no-op on backends without a history). Without
+// post-processing, raw is itself the dictation and is copied for real.
 func (d *Daemon) copyTwo(c platform.Copier, raw, improved string, postOK bool) error {
-	if err := c.Copy(raw); err != nil {
+	if !postOK {
+		return c.Copy(raw)
+	}
+	if err := c.CopyHistory(raw); err != nil {
 		return err
 	}
-	if postOK {
-		return c.Copy(improved)
-	}
-	return nil
+	return c.Copy(improved)
 }
 
 // confirmCopied gives feedback that text landed on the clipboard without being

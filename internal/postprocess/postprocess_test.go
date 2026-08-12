@@ -1,6 +1,8 @@
 package postprocess
 
 import (
+	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -125,5 +127,41 @@ func TestRun_Timeout(t *testing.T) {
 	}
 	if elapsed > 2*time.Second {
 		t.Fatalf("timeout did not fire promptly: %v", elapsed)
+	}
+}
+
+func TestRunContext_Canceled(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell scripts")
+	}
+	s := writeScript(t, "#!/bin/sh\nsleep 30\n")
+	ctx, cancel := context.WithCancel(context.Background())
+	time.AfterFunc(100*time.Millisecond, cancel)
+	start := time.Now()
+	// A generous timeout: the run must end on the cancel, not on the deadline.
+	_, err := RunContext(ctx, s, "x", 30*time.Second, nil)
+	elapsed := time.Since(start)
+	if !errors.Is(err, ErrCanceled) {
+		t.Fatalf("expected ErrCanceled, got: %v", err)
+	}
+	if elapsed > 2*time.Second {
+		t.Fatalf("cancel did not fire promptly: %v", elapsed)
+	}
+}
+
+// An already-cancelled context must not run the script at all.
+func TestRunContext_CanceledBeforeStart(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell scripts")
+	}
+	marker := filepath.Join(t.TempDir(), "ran")
+	s := writeScript(t, "#!/bin/sh\ntouch "+marker+"\necho out\n")
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := RunContext(ctx, s, "x", 30*time.Second, nil); !errors.Is(err, ErrCanceled) {
+		t.Fatalf("expected ErrCanceled, got: %v", err)
+	}
+	if _, err := os.Stat(marker); err == nil {
+		t.Fatal("script ran despite a cancelled context")
 	}
 }

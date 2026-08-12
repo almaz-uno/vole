@@ -105,7 +105,7 @@ func (g *Grabber) grab(mask uint16, kc xproto.Keycode) error {
 }
 
 // Listen reads events in a blocking loop: onStart on PTT press (with the
-// language from the initial Shift), onLang on Shift changes while held, and
+// language from the initial Shift), onLang on Shift changes while held and
 // onStop on release. Run it in a separate goroutine.
 func (g *Grabber) Listen(onStart, onLang, onStop func(lang string)) {
 	lang := func(shift bool) string {

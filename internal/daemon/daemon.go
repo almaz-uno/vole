@@ -1,5 +1,6 @@
 // Package daemon is vole's resident server: it keeps the whisper model in VRAM,
-// listens on a unix socket, and records and transcribes audio on command.
+// listens on a platform IPC endpoint (unix socket or Windows named pipe), and
+// records and transcribes audio on command.
 package daemon
 
 import (
@@ -7,7 +8,6 @@ import (
 	"fmt"
 	"net"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -18,6 +18,7 @@ import (
 	"github.com/almaz-uno/vole/internal/audio"
 	"github.com/almaz-uno/vole/internal/config"
 	"github.com/almaz-uno/vole/internal/history"
+	"github.com/almaz-uno/vole/internal/ipc"
 	"github.com/almaz-uno/vole/internal/models"
 	"github.com/almaz-uno/vole/internal/platform"
 	"github.com/almaz-uno/vole/internal/postprocess"
@@ -60,19 +61,18 @@ type Daemon struct {
 // model loads in the background, so START does not wait for the load. version
 // is the build version shown in the tray.
 func Run(version string) error {
+	prepareDaemonProcess()
 	cfg := config.Load()
 	sock := cfg.Socket
-	if c, err := net.Dial("unix", sock); err == nil { // already alive
-		c.Close()
+	if ipc.Alive(sock) { // already alive
 		return nil
 	}
-	_ = os.Remove(sock) // clean up a stale socket
 
-	ln, err := net.Listen("unix", sock)
+	ln, err := ipc.Listen(sock)
 	if err != nil {
 		return fmt.Errorf("listen %s: %w", sock, err)
 	}
-	defer func() { ln.Close(); os.Remove(sock) }()
+	defer func() { ln.Close(); ipc.Cleanup(sock) }()
 
 	d := &Daemon{cfg: cfg, rec: &audio.Recorder{}, enabled: true, modelReady: make(chan struct{}), version: version}
 	d.postScript = cfg.PostProcess
@@ -651,8 +651,4 @@ func (d *Daemon) pasteHistory(idx int) {
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "vole daemon: paste history:", err)
 	}
-}
-
-func notify(title, body string) {
-	_ = exec.Command("notify-send", "-t", "2500", title, body).Run()
 }

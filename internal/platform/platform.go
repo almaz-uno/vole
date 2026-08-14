@@ -1,10 +1,12 @@
 // Package platform abstracts vole's input/output surface so the daemon is
-// backend-agnostic. Two backends satisfy these interfaces:
+// backend-agnostic. Three backends satisfy these interfaces:
 //
 //   - X11: XGrabKey hotkey, xdotool injection, ARGB override-redirect overlay
 //     (internal/{hotkey,inject,overlay}).
 //   - Wayland: GlobalShortcuts desktop portal, ydotool/wtype/wl-clipboard
 //     injection, tray-only indicator (internal/wayland).
+//   - Windows: RegisterHotKey PTT, clipboard+Ctrl+V injection, tray-only
+//     indicator (internal/{winhotkey,inject}).
 //
 // internal/daemon depends only on the interfaces here; it picks a backend at
 // runtime via Detect.
@@ -12,6 +14,7 @@ package platform
 
 import (
 	"os"
+	"runtime"
 	"strings"
 )
 
@@ -94,15 +97,22 @@ const (
 	BackendAuto    Backend = "auto"
 	BackendX11     Backend = "x11"
 	BackendWayland Backend = "wayland"
+	BackendWindows Backend = "windows"
 )
 
-// Detect resolves a configured backend to a concrete one. "auto" (or any
-// unknown value) prefers Wayland when WAYLAND_DISPLAY is set or
-// XDG_SESSION_TYPE=wayland, otherwise X11.
+// Detect resolves a configured backend to a concrete one. Explicit values are
+// returned as-is. "auto" (or any unknown value) picks:
+//
+//   - windows when GOOS is windows
+//   - wayland when WAYLAND_DISPLAY is set or XDG_SESSION_TYPE=wayland
+//   - x11 otherwise
 func Detect(b Backend) Backend {
 	switch b {
-	case BackendX11, BackendWayland:
+	case BackendX11, BackendWayland, BackendWindows:
 		return b
+	}
+	if runtime.GOOS == "windows" {
+		return BackendWindows
 	}
 	if os.Getenv("WAYLAND_DISPLAY") != "" ||
 		strings.EqualFold(os.Getenv("XDG_SESSION_TYPE"), "wayland") {
@@ -112,8 +122,7 @@ func Detect(b Backend) Backend {
 }
 
 // Nop is an Indicator that draws nothing — used on backends that rely on the
-// tray alone (Wayland, until a layer-shell overlay lands), or when no display
-// is available.
+// tray alone (Wayland, Windows), or when no display is available.
 type Nop struct{}
 
 func (Nop) Show(string)         {}

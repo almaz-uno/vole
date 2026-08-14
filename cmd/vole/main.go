@@ -12,22 +12,19 @@ package main
 import (
 	"fmt"
 	"io"
-	"math"
-	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/almaz-uno/vole/internal/audio"
 	"github.com/almaz-uno/vole/internal/config"
 	"github.com/almaz-uno/vole/internal/daemon"
 	"github.com/almaz-uno/vole/internal/inject"
+	"github.com/almaz-uno/vole/internal/ipc"
 	"github.com/almaz-uno/vole/internal/models"
-	"github.com/almaz-uno/vole/internal/overlay"
 	"github.com/almaz-uno/vole/internal/whisper"
 )
 
@@ -77,7 +74,7 @@ func main() {
 
 // send sends a single command to the daemon and returns its reply.
 func send(sock, cmd string) (string, error) {
-	conn, err := net.Dial("unix", sock)
+	conn, err := ipc.Dial(sock)
 	if err != nil {
 		return "", err
 	}
@@ -88,11 +85,10 @@ func send(sock, cmd string) (string, error) {
 }
 
 // ensureDaemon spawns the daemon if it is not already listening, then waits
-// until the socket accepts connections (the daemon listens before loading the
-// model, so this is fast).
+// until the socket/pipe accepts connections (the daemon listens before loading
+// the model, so this is fast).
 func ensureDaemon(sock string) {
-	if c, err := net.Dial("unix", sock); err == nil {
-		c.Close()
+	if ipc.Alive(sock) {
 		return
 	}
 	exe, err := os.Executable()
@@ -100,19 +96,19 @@ func ensureDaemon(sock string) {
 		fatal(err)
 	}
 	cmd := exec.Command(exe, "daemon")
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true} // detach from the client
+	cmd.SysProcAttr = daemonSysProcAttr()
 	devnull, _ := os.OpenFile(os.DevNull, os.O_RDWR, 0)
 	if devnull != nil {
 		cmd.Stdin, cmd.Stdout = devnull, devnull
-		// keep stderr for model-loading diagnostics
+		// keep stderr for model-loading diagnostics (hidden-console autostart
+		// still inherits a stderr handle; interactive runs show Vulkan logs)
 	}
 	if err := cmd.Start(); err != nil {
 		fatal(fmt.Errorf("failed to start daemon: %w", err))
 	}
 	deadline := time.Now().Add(120 * time.Second)
 	for time.Now().Before(deadline) {
-		if c, err := net.Dial("unix", sock); err == nil {
-			c.Close()
+		if ipc.Alive(sock) {
 			return
 		}
 		time.Sleep(50 * time.Millisecond)
@@ -173,28 +169,6 @@ func cmdTranscribe(args []string) {
 	fmt.Print(text)
 }
 
-// cmdOverlayTest exercises the overlay in isolation, without recording or transcription.
-func cmdOverlayTest() {
-	ov, err := overlay.New()
-	if err != nil {
-		fatal(err)
-	}
-	defer ov.Close()
-
-	ov.Show("RU")
-	start := time.Now()
-	for time.Since(start) < 4*time.Second {
-		t := time.Since(start).Seconds()
-		ov.SetLevel(0.02 + 0.13*(0.5+0.5*math.Sin(t*6))) // simulated speech level
-		if t > 2.5 {
-			ov.SetMode(overlay.ModeProcessing)
-		}
-		time.Sleep(40 * time.Millisecond)
-	}
-	ov.Hide()
-	time.Sleep(300 * time.Millisecond)
-}
-
 // cmdPaste copies text to the clipboard and pastes it via the configured paste
 // keystroke (the inject=paste path), after a short delay so you can focus the
 // target field. Text comes from the args or stdin. Verification helper.
@@ -223,7 +197,7 @@ func usage() {
 Commands:
   daemon              resident daemon (model in VRAM)
   start [ru|en|auto]  start recording (lazily spawns the daemon)
-  stop                stop, transcribe and inject the text
+  stop                stop, transcribe, inject
   download            download missing models (model + VAD)
   transcribe <wav>    one-shot transcription of a file (debug)`)
 	os.Exit(1)

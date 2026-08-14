@@ -2,8 +2,6 @@
 package whisper
 
 /*
-#cgo pkg-config: whisper
-#cgo LDFLAGS: -Wl,--disable-new-dtags
 #include <whisper.h>
 #include <stdlib.h>
 */
@@ -11,6 +9,7 @@ import "C"
 
 import (
 	"fmt"
+	"os"
 	"strings"
 	"unsafe"
 )
@@ -42,8 +41,10 @@ func New(modelPath string, useGPU bool, vadPath string, vadThreshold float64) (*
 
 	ctx := C.whisper_init_from_file_with_params(cpath, cparams)
 	if ctx == nil {
-		return nil, fmt.Errorf("whisper: failed to load model %q", modelPath)
+		return nil, fmt.Errorf("whisper: failed to load model %q (Vulkan GPU init failed? install a Vulkan driver and rebuild whisper.cpp with GGML_VULKAN=ON; look for ggml_vulkan: in the log)", modelPath)
 	}
+	info := C.GoString(C.whisper_print_system_info())
+	fmt.Fprintf(os.Stderr, "[vole] whisper: %s\n", strings.TrimSpace(info))
 	return &Context{ctx: ctx, vadPath: vadPath, vadThreshold: vadThreshold}, nil
 }
 
@@ -77,7 +78,7 @@ func (c *Context) Transcribe(samples []float32, lang string, threads int, prompt
 	params.print_progress = cbool(false)
 	params.print_realtime = cbool(false)
 	params.print_special = cbool(false)
-	params.translate = cbool(false)  // transcription task (whisper's translate task is unreliable on the turbo model — translation is done by the post-process LLM instead)
+	params.translate = cbool(false)   // transcription task (whisper's translate task is unreliable on the turbo model — translation is done by the post-process LLM instead)
 	params.no_context = cbool(true)   // single pass — no prior context needed
 	params.suppress_nst = cbool(true) // suppress non-speech tokens (fewer hallucinations)
 

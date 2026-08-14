@@ -1,3 +1,5 @@
+//go:build linux
+
 // Package overlay is a floating indicator centered near the top of the screen:
 // a borderless ARGB32 override-redirect window (transparency via the compositor)
 // that draws a rounded panel with a status icon, a VU meter, and a language

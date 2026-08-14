@@ -1,25 +1,32 @@
-# vole configuration. Copy to ~/.config/vole/config.yaml and edit to taste.
+# vole configuration.
+#   Linux:   copy to ~/.config/vole/config.yaml
+#   Windows: copy to %AppData%\vole\config.yaml
 # Any field may be omitted — defaults are used for missing ones.
+# Restart the daemon after editing this file.
 
 # Input/output backend:
-#   auto     (default) Wayland if WAYLAND_DISPLAY / XDG_SESSION_TYPE=wayland, else X11
+#   auto     (default) windows on Windows; on Linux, Wayland if WAYLAND_DISPLAY
+#            / XDG_SESSION_TYPE=wayland, else X11
 #   x11      XGrabKey hotkey + floating overlay
 #   wayland  GlobalShortcuts portal + tray only
+#   windows  RegisterHotKey PTT + tray only (no overlay)
 # Override with the VOLE_BACKEND env var.
 backend: auto
 
 # Text injection method:
-#   auto   (default) type on X11, paste on Wayland
-#   type   xdotool types the text (only correct on a real X server; on KWin
-#          Wayland the active layout garbles non-Latin text, e.g. Cyrillic)
+#   auto   type on X11, paste on Wayland and Windows
+#   type   xdotool types the text (Linux only; on KWin Wayland the active layout
+#          garbles non-Latin text, e.g. Cyrillic)
 #   paste  put the text on the clipboard and paste it with a keystroke
-#          (layout-independent; the only correct option for Cyrillic on KWin).
-#          Clipboard backend auto-detected: Klipper / wl-copy / xclip / xsel.
+#          (layout-independent). Linux: Klipper / wl-copy / xclip / xsel + xdotool.
+#          Windows: Win32 clipboard + SendInput (default, required for Unicode).
 inject: auto
 
-# Paste keystroke for inject=paste (xdotool key syntax). Default Shift+Insert
-# (works in most GUI apps); terminals (Konsole) may need ctrl+shift+v.
-# paste_key: shift+Insert
+# Paste keystroke for inject=paste.
+#   Linux:   xdotool key syntax. Default Shift+Insert; terminals may need ctrl+shift+v.
+#   Windows: SendInput spec. Default ctrl+v (also understands shift+insert, ctrl+shift+v).
+# paste_key: shift+Insert        # Linux
+# paste_key: ctrl+v              # Windows default
 
 # inject=paste only: auto-paste after dictation. false = just put it on the
 # clipboard and paste it yourself. Clicking a history entry always pastes.
@@ -27,8 +34,11 @@ auto_paste: true
 
 # Post-processing: an external script that receives the raw transcript on stdin
 # and returns an improved version on stdout (e.g. punctuation/case cleanup, or an
-# LLM call). The script runs as an executable directly — it needs a shebang
-# (#!/bin/sh, #!/usr/bin/env python3, …) and the execute bit. With post-processing
+# LLM call). The script runs as an executable directly — no shell. On Linux it
+# needs a shebang (#!/bin/sh, #!/usr/bin/env python3, …) and the execute bit.
+# On Windows use a .exe path, or: powershell.exe -NoProfile -File C:\path\post.ps1
+# A timeout kills the process group (Unix) or the Windows job object (tree).
+# With post-processing
 # on, the improved text is pasted into the focused window and both the raw and the
 # improved text land on the clipboard (raw as the previous Klipper entry) and in
 # the history. If the script fails, times out, or returns empty output, the raw
@@ -72,8 +82,13 @@ auto_paste: true
 # in System Settings → Shortcuts. There mods/key only seed the *suggested*
 # trigger: "dictate" gets mods+key and "dictate-alt" gets mods+Shift+key (KDE may
 # pre-fill it; you can still override). E.g. mods: Super, key: k → Meta+K / Meta+Shift+K.
+#
+# Windows: RegisterHotKey for mods+key (lang) and mods+Shift+key (lang_shift).
+# No live-Shift. Defaults: Control+Alt+D / Control+Alt+Shift+D. Avoid Win+Ctrl+D
+# (virtual desktops) and Win+H (Voice typing). If the combo is already taken,
+# vole logs it and keeps running without PTT.
 hotkey:
-  mods: Super+Control   # modifiers: Super, Control, Alt, Shift (joined with +)
+  mods: Super+Control   # Linux default. Windows default is Control+Alt.
   key: d                # key (a Latin letter/digit, or space/pause/menu)
   lang: ru              # language without Shift / "dictate" shortcut
   lang_shift: en        # language while Shift is held / "dictate-alt" shortcut
@@ -89,13 +104,18 @@ vad_threshold: 0.3
 # Recent dictations: shown in the tray menu (click one to paste it) and persisted.
 history_size: 256
 # history_file: ~/.local/state/vole/history.jsonl
+# history_file: C:\Users\you\AppData\Local\vole\history.jsonl   # Windows default
 
-# Model paths (~ is supported). Defaults to the whisper.cpp build directory.
+# Model paths (~ is supported).
+# Linux default: ~/.local/share/dictation/whisper.cpp/models/…
+# Windows default: %LocalAppData%\vole\models\…
 model: ~/.local/share/dictation/whisper.cpp/models/ggml-large-v3.bin
 vad: ~/.local/share/dictation/whisper.cpp/models/ggml-silero-v5.1.2.bin
 
-# Daemon unix socket (defaults to $XDG_RUNTIME_DIR/vole.sock).
+# Daemon IPC. Linux: unix socket ($XDG_RUNTIME_DIR/vole.sock).
+# Windows: named pipe \\.\pipe\vole (override with VOLE_SOCK).
 # socket: /run/user/1000/vole.sock
+# socket: \\.\pipe\vole
 
 # Debug: dump the raw captured audio of each dictation as a WAV beside this path
 # (16 kHz mono, before silence/VAD/transcription). Files are timestamped siblings,

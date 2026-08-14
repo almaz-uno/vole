@@ -1,3 +1,5 @@
+//go:build linux
+
 // Package hotkey globally intercepts the PTT key via X11 (XGrabKey), without
 // depending on i3. On trigger, the passive grab escalates to an active keyboard
 // grab until the key is released, so KeyRelease arrives reliably even if the

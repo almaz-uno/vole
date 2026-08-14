@@ -1,7 +1,10 @@
 # vole — voice dictation via whisper.cpp (GPU/Vulkan)
 #
-# whisper.cpp must be installed into a prefix visible to pkg-config (see
+# Linux: whisper.cpp must be installed into a prefix visible to pkg-config (see
 # whisper.pc). PKG_CONFIG_PATH below points cgo at it.
+#
+# Windows: use scripts/build-whisper-windows.ps1 then scripts/build-windows.ps1
+# (MinGW gcc + Vulkan SDK). Do not use this Makefile on Windows.
 
 export PKG_CONFIG_PATH := $(HOME)/.local/lib/pkgconfig
 

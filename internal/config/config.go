@@ -12,7 +12,7 @@ import (
 
 // Hotkey describes the PTT binding with Shift-based language switching.
 type Hotkey struct {
-	Mods      string `yaml:"mods"`       // "Super+Control" (Linux) / "Control+Alt" (Windows)
+	Mods      string `yaml:"mods"`       // "Super+Control" (Linux) / "Control+Alt" (Windows; at least one required)
 	Key       string `yaml:"key"`        // "d"
 	Lang      string `yaml:"lang"`       // language without Shift
 	LangShift string `yaml:"lang_shift"` // language while Shift is held / alt hotkey
@@ -28,7 +28,7 @@ type Config struct {
 	Socket             string  `yaml:"socket"`
 	Backend            string  `yaml:"backend"`             // input/output backend: auto|x11|wayland|windows
 	Inject             string  `yaml:"inject"`              // injection method: auto|type|paste
-	PasteKey           string  `yaml:"paste_key"`           // paste keystroke for inject=paste; Linux: xdotool spec (default Shift+Insert); Windows: SendInput spec (default ctrl+v)
+	PasteKey           string  `yaml:"paste_key"`           // inject=paste input; Linux: xdotool spec (default Shift+Insert); Windows: unicode or SendInput combo (default unicode)
 	AutoPaste          bool    `yaml:"auto_paste"`          // inject=paste: auto-paste after dictation (false = copy to clipboard only)
 	PostProcess        string  `yaml:"postprocess"`         // path to a post-processing script (stdin=transcript, stdout=improved); empty = off
 	PostProcessOn      bool    `yaml:"postprocess_on"`      // run post-processing at startup (runtime-toggled in the tray); default false

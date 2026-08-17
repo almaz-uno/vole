@@ -46,8 +46,8 @@ func TestDefaults_Windows(t *testing.T) {
 	if c.Hotkey.Mods != "Control+Alt" {
 		t.Errorf("mods = %q, want Control+Alt", c.Hotkey.Mods)
 	}
-	if c.PasteKey != "ctrl+v" {
-		t.Errorf("paste_key = %q, want ctrl+v", c.PasteKey)
+	if c.PasteKey != "unicode" {
+		t.Errorf("paste_key = %q, want unicode", c.PasteKey)
 	}
 	if c.Socket != `\\.\pipe\vole` {
 		t.Errorf("socket = %q, want named pipe", c.Socket)

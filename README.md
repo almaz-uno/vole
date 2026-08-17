@@ -140,9 +140,12 @@ exec --no-startup-id systemctl --user import-environment DISPLAY XAUTHORITY DBUS
 
 ## Windows
 
-Windows 10/11 with a **working Vulkan GPU driver**. There is no floating overlay
-and no live-Shift language switch; status lives in the **system tray** (notification
-area, including the overflow `^`). Injection is always Unicode clipboard + **Ctrl+V**.
+Windows 10/11 with a **working Vulkan GPU driver**. A small click-through overlay
+(red while you hold the hotkey, amber while whisper runs) sits at the top of the
+screen so status does not depend on the tray overflow. There is no live-Shift
+language switch. Injection defaults to Unicode SendInput; set `paste_key` to a
+combination such as `ctrl+v` or `shift+insert` to use that combination instead.
+The clipboard is still set for a manual paste.
 
 This is a user-session tray app, **not** a Windows Service (`services.msc`). A
 service would run in Session 0 and would not own a tray icon or paste into the
@@ -198,7 +201,7 @@ daemon after editing the yaml.** Environment overrides: `VOLE_MODEL`, `VOLE_VAD`
 | Setting | Default | Where to change |
 |---------|---------|-----------------|
 | `backend` | `auto` → `windows` | yaml / `VOLE_BACKEND` |
-| `inject` / `paste_key` | `paste` / `ctrl+v` | yaml only |
+| `inject` / `paste_key` | `paste` / `unicode` | yaml only |
 | `auto_paste` | `true` | yaml + **tray checkbox** |
 | `hotkey.mods` / `key` | `Control+Alt` / `d` | yaml only (restart) |
 | `hotkey.lang` / `lang_shift` | `ru` / `en` | yaml only (restart) |
@@ -213,7 +216,9 @@ start) writes `%LocalAppData%\vole\models\`.
 
 **Default hotkeys:** hold **Ctrl+Alt+D** (Russian) or **Ctrl+Alt+Shift+D** (English).
 Change `hotkey.mods` / `key` in yaml and restart. There is no live-Shift: the
-Shift combo is a second `RegisterHotKey`.
+Shift combo is a second `RegisterHotKey`. Windows requires at least one
+modifier; modifier-free global PTT bindings are rejected because their release
+cannot be observed reliably through `RegisterHotKey`.
 
 **Known shortcut conflicts** (do not use these as defaults):
 
@@ -243,11 +248,11 @@ checkbox (hidden when no path is configured).
 
 `vole daemon` is a tray application. The icon sits in the notification area
 (bottom-right; it may land in the overflow `^` — pin it via the taskbar
-overflow settings). Right-click opens a context menu (same idea as the system
-Sound icon): Enable/Disable dictation, Auto-paste, Post-process, English input,
-Recent dictations, Quit. Left-click start/stop is supported when the tray host
-delivers it. Colors: idle / recording (red) / transcribing (amber) /
-post-process (blue).
+overflow settings). Recording and transcribing status also appear as a small
+panel at the **top of the screen** (red / amber / blue), so you do not need the
+tray visible. Right-click the tray icon for the menu: Enable/Disable dictation,
+Auto-paste, Post-process, English input, Recent dictations, Quit. Left-click
+start/stop is supported when the tray host delivers it.
 
 A console window is **not** required. If you start vole from `cmd.exe`, that
 console stays so you can read Vulkan logs. Double-click / Task Scheduler hide

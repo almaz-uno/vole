@@ -4,6 +4,9 @@ package audio
 
 import (
 	"fmt"
+	"os"
+	"runtime"
+	"strings"
 	"time"
 	"unsafe"
 
@@ -42,13 +45,16 @@ func (r *Recorder) Stop() []float32 {
 }
 
 func (r *Recorder) captureLoop(started chan<- error) {
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
 	defer close(r.done)
 
-	if err := ole.CoInitializeEx(0, ole.COINIT_MULTITHREADED); err != nil {
+	uninit, err := comInit()
+	if err != nil {
 		started <- fmt.Errorf("wasapi: CoInitializeEx: %w", err)
 		return
 	}
-	defer ole.CoUninitialize()
+	defer uninit()
 
 	var mmde *wca.IMMDeviceEnumerator
 	if err := wca.CoCreateInstance(
@@ -60,12 +66,13 @@ func (r *Recorder) captureLoop(started chan<- error) {
 	}
 	defer mmde.Release()
 
-	var mmd *wca.IMMDevice
-	if err := mmde.GetDefaultAudioEndpoint(wca.ECapture, wca.EConsole, &mmd); err != nil {
-		started <- fmt.Errorf("wasapi: no capture device: %w", err)
+	mmd, name, err := openCaptureDevice(mmde)
+	if err != nil {
+		started <- err
 		return
 	}
 	defer mmd.Release()
+	fmt.Fprintf(os.Stderr, "[vole] wasapi: capture %q\n", name)
 
 	var ac *wca.IAudioClient
 	if err := mmd.Activate(wca.IID_IAudioClient, wca.CLSCTX_ALL, nil, &ac); err != nil {
@@ -139,4 +146,132 @@ func (r *Recorder) captureLoop(started chan<- error) {
 		}
 		_ = acc.ReleaseBuffer(nFrames)
 	}
+}
+
+// openCaptureDevice picks an active capture endpoint. Windows' default is often
+// a virtual mixer (SteelSeries Sonar, VB-Cable) that is silent unless the app
+// is registered with that mixer; other apps keep using it. vole skips those
+// and prefers a hardware microphone so dictation works without changing the
+// system default device.
+func openCaptureDevice(mmde *wca.IMMDeviceEnumerator) (*wca.IMMDevice, string, error) {
+	var def *wca.IMMDevice
+	_ = mmde.GetDefaultAudioEndpoint(wca.ECapture, wca.EConsole, &def)
+	var defID string
+	if def != nil {
+		_ = def.GetId(&defID)
+	}
+
+	var col *wca.IMMDeviceCollection
+	if err := mmde.EnumAudioEndpoints(wca.ECapture, wca.DEVICE_STATE_ACTIVE, &col); err != nil {
+		if def != nil {
+			return def, captureDeviceName(def), nil
+		}
+		return nil, "", fmt.Errorf("wasapi: no capture device: %w", err)
+	}
+	defer col.Release()
+
+	var n uint32
+	if err := col.GetCount(&n); err != nil || n == 0 {
+		if def != nil {
+			return def, captureDeviceName(def), nil
+		}
+		return nil, "", fmt.Errorf("wasapi: no capture device")
+	}
+
+	bestScore := -1 << 30
+	var best *wca.IMMDevice
+	var bestName string
+	for i := uint32(0); i < n; i++ {
+		var mmd *wca.IMMDevice
+		if err := col.Item(i, &mmd); err != nil {
+			continue
+		}
+		name := captureDeviceName(mmd)
+		var id string
+		_ = mmd.GetId(&id)
+		s := scoreCaptureDevice(name, id != "" && id == defID)
+		if best == nil || s > bestScore {
+			if best != nil {
+				best.Release()
+			}
+			best, bestScore, bestName = mmd, s, name
+			continue
+		}
+		mmd.Release()
+	}
+	if def != nil {
+		def.Release()
+	}
+	if best == nil {
+		return nil, "", fmt.Errorf("wasapi: no capture device")
+	}
+	return best, bestName, nil
+}
+
+func captureDeviceName(mmd *wca.IMMDevice) string {
+	var ps *wca.IPropertyStore
+	if err := mmd.OpenPropertyStore(wca.STGM_READ, &ps); err != nil {
+		return ""
+	}
+	defer ps.Release()
+	var pv wca.PROPVARIANT
+	if err := ps.GetValue(&wca.PKEY_Device_FriendlyName, &pv); err != nil {
+		return ""
+	}
+	return pv.String()
+}
+
+func scoreCaptureDevice(name string, isDefault bool) int {
+	n := strings.ToLower(name)
+	score := 0
+	if isDefault {
+		score += 10
+	}
+	for _, v := range []string{
+		"sonar", "vb-audio", "cable", "voicemeeter",
+		"stereo mix", "what u hear", "virtual audio",
+	} {
+		if strings.Contains(n, v) {
+			score -= 100
+		}
+	}
+	if strings.Contains(n, "microphone") || strings.Contains(n, "микрофон") {
+		score += 20
+	}
+	return score
+}
+
+const (
+	sFalse          = 1
+	rpcEChangedMode = 0x80010106
+)
+
+// comInit initializes COM on the current OS thread. S_FALSE (already inited)
+// and RPC_E_CHANGED_MODE (thread already STA) are not failures — go-ole
+// reports S_FALSE as error 1 ("Incorrect function").
+func comInit() (func(), error) {
+	err := ole.CoInitializeEx(0, ole.COINIT_MULTITHREADED)
+	needsUninit, handled := comInitNeedsUninit(err)
+	if !handled {
+		return nil, err
+	}
+	if needsUninit {
+		return ole.CoUninitialize, nil
+	}
+	return func() {}, nil
+}
+
+func comInitNeedsUninit(err error) (needsUninit, handled bool) {
+	if err == nil {
+		return true, true
+	}
+	if oe, ok := err.(*ole.OleError); ok {
+		switch oe.Code() {
+		case sFalse:
+			return true, true
+		case rpcEChangedMode:
+			return false, true
+		}
+	}
+	return false, false
 }

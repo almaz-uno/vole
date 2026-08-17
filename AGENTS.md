@@ -49,8 +49,9 @@ so the language server resolves the cgo package.
   `Mode`, and `Detect` (Windows via `GOOS`; else Wayland vs X11 from
   `WAYLAND_DISPLAY` / `XDG_SESSION_TYPE`).
 - `inject` — Linux: xdotool / clipboard+keystroke. Windows: Win32 clipboard +
-  SendInput Ctrl+V.
-- `overlay` (X11) — borderless ARGB window near the cursor (status dot + VU meter).
+  Unicode SendInput (Ctrl+V is unreliable on a Russian layout).
+- `overlay` — floating status panel (X11 ARGB window; Windows layered HWND).
+  Wayland stays tray-only.
 - `hotkey` (X11) — global PTT via `XGrabKey` (reliable release, live Shift = language switch).
 - `wayland` — Wayland backend: PTT via the GlobalShortcuts desktop portal (DBus).
   Injection stays on `inject` (xdotool); indicator is tray-only.
@@ -76,8 +77,9 @@ host (e.g. lxqt-panel; KDE hosts SNI natively), and the ggml models
   injection won't reach native clients. The cursor overlay is X11-only (tray
   reflects state on Wayland); a layer-shell overlay is a future addition.
 
-**Windows:** WASAPI capture, Win32 clipboard+SendInput, system tray. Vulkan GPU
-driver at runtime; whisper/ggml/vulkan DLLs next to `vole.exe`. No overlay.
+**Windows:** WASAPI capture, Win32 clipboard+Unicode SendInput, system tray, and
+a click-through overlay (red while recording, amber while transcribing). Vulkan GPU
+driver at runtime; whisper/ggml/vulkan DLLs next to `vole.exe`.
 Autostart via Task Scheduler (At log on) or the Startup folder — not a Windows
 Service.
 

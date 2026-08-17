@@ -24,9 +24,10 @@ inject: auto
 
 # Paste keystroke for inject=paste.
 #   Linux:   xdotool key syntax. Default Shift+Insert; terminals may need ctrl+shift+v.
-#   Windows: SendInput spec. Default ctrl+v (also understands shift+insert, ctrl+shift+v).
+#   Windows: "unicode" or a SendInput combo. Default unicode (also understands
+#   ctrl+v, shift+insert, and ctrl+shift+v).
 # paste_key: shift+Insert        # Linux
-# paste_key: ctrl+v              # Windows default
+# paste_key: unicode             # Windows default
 
 # inject=paste only: auto-paste after dictation. false = just put it on the
 # clipboard and paste it yourself. Clicking a history entry always pastes.
@@ -86,7 +87,8 @@ auto_paste: true
 # Windows: RegisterHotKey for mods+key (lang) and mods+Shift+key (lang_shift).
 # No live-Shift. Defaults: Control+Alt+D / Control+Alt+Shift+D. Avoid Win+Ctrl+D
 # (virtual desktops) and Win+H (Voice typing). If the combo is already taken,
-# vole logs it and keeps running without PTT.
+# vole logs it and keeps running without PTT. At least one modifier is required
+# on Windows; modifier-free release cannot be observed reliably.
 hotkey:
   mods: Super+Control   # Linux default. Windows default is Control+Alt.
   key: d                # key (a Latin letter/digit, or space/pause/menu)

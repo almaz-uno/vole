@@ -7,16 +7,23 @@ import (
 	"os"
 
 	"github.com/almaz-uno/vole/internal/inject"
+	"github.com/almaz-uno/vole/internal/overlay"
 	"github.com/almaz-uno/vole/internal/platform"
 	"github.com/almaz-uno/vole/internal/winhotkey"
 )
 
-// setupIO wires Windows I/O: clipboard+Ctrl+V paste injector and a tray-only
-// indicator (no floating overlay).
+// setupIO wires Windows I/O: clipboard+Unicode paste injector and a floating
+// layered indicator (the tray icon is often hidden in the overflow).
 func (d *Daemon) setupIO(platform.Backend) {
 	p := inject.NewPaste(d.cfg.PasteKey, d.cfg.AutoPaste)
 	d.inj = p
-	d.ind = platform.Nop{}
+	ov, err := overlay.New()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "vole daemon: overlay unavailable:", err)
+		d.ind = platform.Nop{}
+		return
+	}
+	d.ind = ov
 }
 
 // startHotkey registers Ctrl+Alt+D / Ctrl+Alt+Shift+D (or the configured combo)

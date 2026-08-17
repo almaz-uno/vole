@@ -48,7 +48,7 @@ type Daemon struct {
 	ctx        *whisper.Context
 	modelReady chan struct{} // closed once the model is loaded
 
-	ind       platform.Indicator // overlay (X11) or Nop (Wayland tray-only); never nil
+	ind       platform.Indicator // overlay (X11/Windows) or Nop (Wayland tray-only); never nil
 	inj       platform.Injector  // text injection backend; never nil
 	hk        platform.Hotkey    // PTT source; nil if unavailable
 	tr        *tray.Tray
@@ -385,6 +385,8 @@ func (d *Daemon) stop(lang string) string {
 		return "" // silence / empty press — don't inject hallucinations
 	}
 
+	gain := audio.NormalizePeak(samples, 0.8, 64)
+
 	d.ind.SetMode(platform.ModeProcessing) // indicator: transcribing
 	if d.tr != nil {
 		d.tr.SetState(tray.StateProcessing)
@@ -421,8 +423,19 @@ func (d *Daemon) stop(lang string) string {
 		fmt.Fprintln(os.Stderr, "vole daemon: transcribe:", err)
 		return ""
 	}
-	fmt.Fprintf(os.Stderr, "[vole] %s | audio %.1fs | transcribed in %.2fs | peak=%.3f | %q\n",
-		d.lang, audioSec, dur.Seconds(), peak, text)
+	fmt.Fprintf(os.Stderr, "[vole] %s | audio %.1fs | transcribed in %.2fs | peak=%.3f gain=%.1f | %q\n",
+		d.lang, audioSec, dur.Seconds(), peak, gain, text)
+	if cleaned := whisper.ScrubHallucination(text); cleaned != text {
+		if cleaned == "" {
+			fmt.Fprintf(os.Stderr, "[vole] dropped whisper hallucination: %q\n", text)
+			d.ind.Hide()
+			if d.tr != nil {
+				d.tr.SetState(tray.StateIdle)
+			}
+			return ""
+		}
+		text = cleaned
+	}
 	// In translate mode the raw transcript is the source language (e.g. Russian)
 	// but d.lang is "en"; keep it out of the en-history (only the English result
 	// goes in) to avoid polluting the same-language prompt seed and the menu.
@@ -555,7 +568,7 @@ func (d *Daemon) whisperPrompt(lang string) string {
 			continue
 		}
 		p := strings.TrimSpace(e.Text)
-		if p == "" {
+		if p == "" || whisper.ScrubHallucination(p) == "" {
 			continue
 		}
 		// one prior utterance, capped to a sentence-ish length: whisper's
@@ -585,7 +598,7 @@ func (d *Daemon) copyTwo(c platform.Copier, raw, improved string, postOK bool) e
 
 // confirmCopied gives feedback that text landed on the clipboard without being
 // pasted (tray-click dictation, or PTT with auto-paste off): an overlay toast on
-// X11, a desktop notification where there is no overlay (Wayland tray-only).
+// X11/Windows, a desktop notification where there is no overlay (Wayland tray-only).
 func (d *Daemon) confirmCopied() {
 	d.ind.Toast("Copied to clipboard")
 	if _, nop := d.ind.(platform.Nop); nop {

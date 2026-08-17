@@ -11,12 +11,8 @@
 package overlay
 
 import (
-	"fmt"
 	"image"
-	"image/color"
-	"math"
 	"os"
-	"strings"
 	"sync"
 	"time"
 
@@ -26,55 +22,15 @@ import (
 	"github.com/jezek/xgb/xproto"
 	"golang.org/x/image/font"
 	"golang.org/x/image/font/opentype"
-	"golang.org/x/image/math/fixed"
-)
-
-// Mode is the indicator state. It aliases platform.Mode so *Overlay satisfies
-// platform.Indicator directly.
-type Mode = platform.Mode
-
-const (
-	ModeHidden         = platform.ModeHidden
-	ModeRecording      = platform.ModeRecording
-	ModeProcessing     = platform.ModeProcessing
-	ModePostProcessing = platform.ModePostProcessing
-	ModeDownloading    = platform.ModeDownloading
-	ModeToast          = platform.ModeToast
 )
 
 var _ platform.Indicator = (*Overlay)(nil)
 
-const (
-	winW, winH  = 188, 46
-	radius      = 12.0
-	vuSegments  = 12
-	levelGain   = 8.0
-	topMargin   = 48 // px below the top screen edge (the overlay is centered-top)
-	toastH      = 40 // height of the "copied" toast panel
-	toastPad    = 16 // horizontal padding inside the toast
-	toastDur    = 1900 * time.Millisecond
-	toastFade   = 1400 * time.Millisecond // the toast starts fading out after this
-	framePeriod = 33 * time.Millisecond
-)
-
-var (
-	colBG    = color.NRGBA{30, 30, 46, 235}
-	colRec   = color.NRGBA{229, 57, 53, 255}
-	colProc  = color.NRGBA{255, 179, 0, 255}
-	colPost  = color.NRGBA{33, 150, 243, 255} // blue — post-processing hook
-	colText  = color.NRGBA{239, 240, 241, 255}
-	colOK    = color.NRGBA{76, 175, 80, 255} // green check mark for the toast
-	colVUoff = color.NRGBA{58, 58, 78, 255}
-	colVUlo  = color.NRGBA{76, 175, 80, 255}
-	colVUmid = color.NRGBA{255, 193, 7, 255}
-	colVUhi  = color.NRGBA{229, 57, 53, 255}
-
-	fontPaths = []string{
-		"/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-		"/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
-		"/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
-	}
-)
+var fontPaths = []string{
+	"/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+	"/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+	"/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
+}
 
 // Overlay is the managed indicator. Created with New, released with Close.
 type Overlay struct {
@@ -264,7 +220,7 @@ func (o *Overlay) Toast(text string) {
 	o.toastAt = time.Now()
 	o.mu.Unlock()
 	o.cmd <- func() {
-		w, h := o.toastSize(text)
+		w, h := toastSize(o.face, text)
 		o.show(w, h)
 	}
 }
@@ -349,233 +305,21 @@ func (o *Overlay) resizeBuf(w, h int) {
 	o.buf = make([]byte, w*h*4)
 }
 
-// toastSize measures the toast panel for text (loop goroutine: it uses the face).
-func (o *Overlay) toastSize(text string) (int, int) {
-	if o.face == nil {
-		return winW, toastH
-	}
-	tw := font.MeasureString(o.face, "✓  "+text).Round()
-	return tw + 2*toastPad, toastH
-}
-
 func (o *Overlay) draw() {
 	o.mu.Lock()
-	mode, lang, level, progress, label := o.mode, o.lang, o.level, o.progress, o.label
-	toastText, toastAt := o.toastText, o.toastAt
+	st := paintState{
+		mode: o.mode, lang: o.lang, level: o.level, progress: o.progress,
+		label: o.label, toastText: o.toastText, toastAt: o.toastAt, face: o.face,
+	}
 	o.mu.Unlock()
-
-	w, h := o.img.Rect.Dx(), o.img.Rect.Dy()
-	clear(o.img.Pix) // transparent canvas
-
-	// the toast fades its whole panel out over its last stretch
-	fade := 1.0
-	if mode == ModeToast {
-		if el := time.Since(toastAt); el > toastFade {
-			fade = clamp(1-float64(el-toastFade)/float64(toastDur-toastFade), 0, 1)
-		}
-	}
-	bg := colBG
-	bg.A = uint8(float64(bg.A) * fade)
-	fillRoundRect(o.img, 0, 0, w, h, radius, bg)
-
-	switch mode {
-	case ModeDownloading:
-		o.drawDownload(label, progress)
-	case ModeToast:
-		o.drawToast(w, h, toastText, fade)
-	default: // recording / processing
-		o.drawRecording(lang, level, mode)
-	}
-
+	paint(o.img, st)
 	o.flush()
-}
-
-// drawRecording renders the status icon, the VU meter, and the language label.
-func (o *Overlay) drawRecording(lang string, level float64, mode Mode) {
-	// status icon on the left
-	icon := colRec
-	if mode == ModeProcessing {
-		icon = colProc
-	} else if mode == ModePostProcessing {
-		icon = colPost
-	}
-	fillCircle(o.img, 25, winH/2, 7.5, icon)
-
-	// VU meter
-	filled := int(clamp(level*levelGain, 0, 1) * vuSegments)
-	const vx, vy, segW, segH, gap = 42, 17, 6, 12, 2
-	for i := 0; i < vuSegments; i++ {
-		c := colVUoff
-		if i < filled {
-			switch {
-			case i >= vuSegments-2:
-				c = colVUhi
-			case i >= vuSegments-5:
-				c = colVUmid
-			default:
-				c = colVUlo
-			}
-		}
-		fillRoundRect(o.img, vx+i*(segW+gap), vy, segW, segH, 1.5, c)
-	}
-
-	// language label
-	if o.face != nil && lang != "" {
-		d := font.Drawer{
-			Dst: o.img, Src: image.NewUniform(colText), Face: o.face,
-			Dot: fixed.P(146, 30),
-		}
-		d.DrawString(strings.ToUpper(lang))
-	}
-}
-
-// drawToast renders a green check mark and the confirmation text, faded by [0,1].
-func (o *Overlay) drawToast(w, h int, text string, fade float64) {
-	ok := colOK
-	ok.A = uint8(float64(ok.A) * fade)
-	tx := colText
-	tx.A = uint8(float64(tx.A) * fade)
-	if o.face == nil {
-		fillCircle(o.img, w/2, h/2, 8, ok)
-		return
-	}
-	m := o.face.Metrics()
-	baseY := (h-m.Height.Ceil())/2 + m.Ascent.Ceil()
-	dc := font.Drawer{
-		Dst: o.img, Src: image.NewUniform(ok), Face: o.face,
-		Dot: fixed.P(toastPad, baseY),
-	}
-	dc.DrawString("✓")
-	adv := font.MeasureString(o.face, "✓  ").Round()
-	dt := font.Drawer{
-		Dst: o.img, Src: image.NewUniform(tx), Face: o.face,
-		Dot: fixed.P(toastPad+adv, baseY),
-	}
-	dt.DrawString(text)
-}
-
-// drawDownload renders the model name and a progress bar.
-func (o *Overlay) drawDownload(label string, progress float64) {
-	if o.face != nil {
-		d := font.Drawer{
-			Dst: o.img, Src: image.NewUniform(colText), Face: o.face,
-			Dot: fixed.P(14, 19),
-		}
-		d.DrawString("↓ " + label)
-
-		pct := fmt.Sprintf("%d%%", int(clamp(progress, 0, 1)*100))
-		w := font.MeasureString(o.face, pct).Round()
-		dp := font.Drawer{
-			Dst: o.img, Src: image.NewUniform(colText), Face: o.face,
-			Dot: fixed.P(winW-14-w, 19),
-		}
-		dp.DrawString(pct)
-	}
-	const bx, by, bh = 14, 28, 9
-	bw := winW - 2*bx
-	fillRoundRect(o.img, bx, by, bw, bh, 4, colVUoff)
-	if fw := int(float64(bw) * clamp(progress, 0, 1)); fw > 0 {
-		fillRoundRect(o.img, bx, by, fw, bh, 4, colProc)
-	}
 }
 
 // flush: NRGBA → premultiplied BGRA, then PutImage to the window.
 func (o *Overlay) flush() {
 	w, h := o.img.Rect.Dx(), o.img.Rect.Dy()
-	src := o.img.Pix
-	for i := 0; i < len(src); i += 4 {
-		r, g, b, a := uint32(src[i]), uint32(src[i+1]), uint32(src[i+2]), uint32(src[i+3])
-		o.buf[i+0] = byte(b * a / 255) // B
-		o.buf[i+1] = byte(g * a / 255) // G
-		o.buf[i+2] = byte(r * a / 255) // R
-		o.buf[i+3] = byte(a)           // A
-	}
+	premulBGRA(o.buf, o.img.Pix)
 	xproto.PutImage(o.conn, xproto.ImageFormatZPixmap, xproto.Drawable(o.win), o.gc,
 		uint16(w), uint16(h), 0, 0, 0, o.depth, o.buf)
-}
-
-// --- drawing primitives with edge antialiasing ---
-
-func blend(img *image.NRGBA, x, y int, c color.NRGBA, cov float64) {
-	if x < 0 || y < 0 || x >= img.Rect.Dx() || y >= img.Rect.Dy() || cov <= 0 {
-		return
-	}
-	i := img.PixOffset(x, y)
-	sa := float64(c.A) / 255 * cov
-	da := float64(img.Pix[i+3]) / 255
-	outA := sa + da*(1-sa)
-	if outA <= 0 {
-		return
-	}
-	mix := func(s, d float64) byte {
-		return byte((s*sa + d*da*(1-sa)) / outA)
-	}
-	img.Pix[i+0] = mix(float64(c.R), float64(img.Pix[i+0]))
-	img.Pix[i+1] = mix(float64(c.G), float64(img.Pix[i+1]))
-	img.Pix[i+2] = mix(float64(c.B), float64(img.Pix[i+2]))
-	img.Pix[i+3] = byte(outA * 255)
-}
-
-func fillRect(img *image.NRGBA, x, y, w, h int, c color.NRGBA) {
-	for j := y; j < y+h; j++ {
-		for i := x; i < x+w; i++ {
-			blend(img, i, j, c, 1)
-		}
-	}
-}
-
-// fillRoundRect draws a rectangle with rounded corners (AA along the arcs).
-func fillRoundRect(img *image.NRGBA, x, y, w, h int, r float64, c color.NRGBA) {
-	if r < 0.5 {
-		fillRect(img, x, y, w, h, c)
-		return
-	}
-	fx, fy, fw, fh := float64(x), float64(y), float64(w), float64(h)
-	for j := y; j < y+h; j++ {
-		for i := x; i < x+w; i++ {
-			px, py := float64(i)+0.5, float64(j)+0.5
-			cov := 1.0
-			// nearest corner-arc center
-			var cx, cy float64
-			corner := false
-			switch {
-			case px < fx+r && py < fy+r:
-				cx, cy, corner = fx+r, fy+r, true
-			case px > fx+fw-r && py < fy+r:
-				cx, cy, corner = fx+fw-r, fy+r, true
-			case px < fx+r && py > fy+fh-r:
-				cx, cy, corner = fx+r, fy+fh-r, true
-			case px > fx+fw-r && py > fy+fh-r:
-				cx, cy, corner = fx+fw-r, fy+fh-r, true
-			}
-			if corner {
-				d := math.Hypot(px-cx, py-cy)
-				cov = clamp(r-d+0.5, 0, 1)
-			}
-			blend(img, i, j, c, cov)
-		}
-	}
-}
-
-// fillCircle draws a filled circle (AA along the edge).
-func fillCircle(img *image.NRGBA, cx, cy int, r float64, c color.NRGBA) {
-	x0, y0 := cx-int(r)-1, cy-int(r)-1
-	x1, y1 := cx+int(r)+1, cy+int(r)+1
-	fcx, fcy := float64(cx), float64(cy)
-	for j := y0; j <= y1; j++ {
-		for i := x0; i <= x1; i++ {
-			d := math.Hypot(float64(i)+0.5-fcx, float64(j)+0.5-fcy)
-			blend(img, i, j, c, clamp(r-d+0.5, 0, 1))
-		}
-	}
-}
-
-func clamp(v, lo, hi float64) float64 {
-	if v < lo {
-		return lo
-	}
-	if v > hi {
-		return hi
-	}
-	return v
 }

@@ -57,6 +57,7 @@ var (
 	procRegisterHotKey    = modUser32.NewProc("RegisterHotKey")
 	procUnregisterHotKey  = modUser32.NewProc("UnregisterHotKey")
 	procGetMessage        = modUser32.NewProc("GetMessageW")
+	procPeekMessage       = modUser32.NewProc("PeekMessageW")
 	procPostThreadMessage = modUser32.NewProc("PostThreadMessageW")
 	procGetAsyncKeyState  = modUser32.NewProc("GetAsyncKeyState")
 )
@@ -103,6 +104,11 @@ func (g *Grabber) Listen(onStart, onLang, onStop func(lang string)) {
 		return
 	}
 
+	// A thread only gets a message queue after Peek/GetMessage. RegisterHotKey
+	// before that can succeed but never deliver WM_HOTKEY.
+	var peek msg
+	procPeekMessage.Call(uintptr(unsafe.Pointer(&peek)), 0, 0, 0, 0)
+
 	baseOK := registerHotKey(idBase, mods|modNorepeat, vk)
 	altOK := registerHotKey(idAlt, mods|modShift|modNorepeat, vk)
 	if !baseOK && !altOK {
@@ -143,16 +149,20 @@ func (g *Grabber) Listen(onStart, onLang, onStop func(lang string)) {
 			continue
 		}
 		var lang string
+		releaseMods := mods
 		switch m.wParam {
 		case idBase:
 			lang = g.cfg.LangBase
 		case idAlt:
 			lang = g.cfg.LangShift
+			releaseMods |= modShift
 		default:
 			continue
 		}
 		onStart(lang)
-		waitKeyRelease(vk)
+		fmt.Fprintf(os.Stderr, "[vole] hotkey: press %s\n", lang)
+		waitPTTRelease(vk, releaseMods)
+		fmt.Fprintf(os.Stderr, "[vole] hotkey: release %s\n", lang)
 		onStop(lang)
 	}
 }
@@ -175,12 +185,64 @@ func unregisterHotKey(id int) {
 	procUnregisterHotKey.Call(0, uintptr(id))
 }
 
-func waitKeyRelease(vk uint32) {
-	// RegisterHotKey fires on press. Poll until the main key is up so PTT
-	// release matches Wayland/X11. 10 ms is plenty for dictation.
+func keyDown(vk uint32) bool {
+	st, _, _ := procGetAsyncKeyState.Call(uintptr(vk))
+	return int16(st) < 0
+}
+
+const (
+	vkControl = 0x11
+	vkShift   = 0x10
+	vkMenu    = 0x12 // Alt
+	vkLWin    = 0x5B
+	vkRWin    = 0x5C
+)
+
+func configuredModifiersDown(mods uint32, down func(uint32) bool) bool {
+	required := mods & (modControl | modAlt | modShift | modWin)
+	if required == 0 {
+		return false
+	}
+	if required&modControl != 0 && !down(vkControl) {
+		return false
+	}
+	if required&modAlt != 0 && !down(vkMenu) {
+		return false
+	}
+	if required&modShift != 0 && !down(vkShift) {
+		return false
+	}
+	if required&modWin != 0 && !down(vkLWin) && !down(vkRWin) {
+		return false
+	}
+	return true
+}
+
+// waitPTTRelease waits until the PTT key is up. RegisterHotKey often swallows
+// the keydown, so GetAsyncKeyState(vk) may already read "up"; in that case we
+// keep recording while the configured modifiers are still held.
+func waitPTTRelease(vk, mods uint32) {
+	seenKey := false
+	settle := time.Now().Add(80 * time.Millisecond)
+	for time.Now().Before(settle) {
+		if keyDown(vk) {
+			seenKey = true
+			break
+		}
+		if configuredModifiersDown(mods, keyDown) {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
 	for {
-		st, _, _ := procGetAsyncKeyState.Call(uintptr(vk))
-		if int16(st) >= 0 {
+		if keyDown(vk) {
+			seenKey = true
+		}
+		if seenKey {
+			if !keyDown(vk) {
+				return
+			}
+		} else if !configuredModifiersDown(mods, keyDown) {
 			return
 		}
 		time.Sleep(10 * time.Millisecond)
@@ -203,6 +265,9 @@ func parseMods(s string) (uint32, error) {
 		default:
 			return 0, fmt.Errorf("hotkey: unknown modifier %q", part)
 		}
+	}
+	if mask == 0 {
+		return 0, fmt.Errorf("hotkey: at least one modifier is required")
 	}
 	return mask, nil
 }

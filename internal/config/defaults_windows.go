@@ -13,7 +13,7 @@ const defaultPipe = `\\.\pipe\vole`
 func Defaults() Config {
 	c := baseDefaults()
 	c.Hotkey = Hotkey{Mods: "Control+Alt", Key: "d", Lang: "ru", LangShift: "en"}
-	c.PasteKey = "ctrl+v"
+	c.PasteKey = "unicode"
 	c.Inject = "paste"
 	c.AutoPaste = true
 	c.Model = filepath.Join(localAppData(), "vole", "models", "ggml-large-v3.bin")

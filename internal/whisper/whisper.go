@@ -12,6 +12,8 @@ import (
 	"os"
 	"strings"
 	"unsafe"
+
+	"github.com/almaz-uno/vole/internal/audio"
 )
 
 // Context is a whisper model loaded into memory (VRAM when useGPU is set).
@@ -69,6 +71,10 @@ func (c *Context) Transcribe(samples []float32, lang string, threads int, prompt
 	if len(samples) == 0 {
 		return "", nil
 	}
+	// Whisper's encoder and Silero VAD both tend to eat the first 200–400 ms,
+	// which turns "Миш потеребишь" into "Ишпотирибиш". A silent lead-in plus a
+	// generous VAD pad keeps the onset.
+	samples = audio.PadLeadingSilence(samples, 300)
 
 	// Greedy for PTT responsiveness (~0.5s). For better quality, switch to
 	// C.WHISPER_SAMPLING_BEAM_SEARCH + params.beam_search.beam_size.
@@ -110,6 +116,7 @@ func (c *Context) Transcribe(samples []float32, lang string, threads int, prompt
 		if c.vadThreshold > 0 {
 			vp.threshold = C.float(c.vadThreshold) // lower = catches quieter speech
 		}
+		vp.speech_pad_ms = 400 // default 30 ms clips the first consonant on PTT
 		params.vad_params = vp
 	}
 

@@ -5,8 +5,8 @@
 //     (internal/{hotkey,inject,overlay}).
 //   - Wayland: GlobalShortcuts desktop portal, ydotool/wtype/wl-clipboard
 //     injection, tray-only indicator (internal/wayland).
-//   - Windows: RegisterHotKey PTT, clipboard+Ctrl+V injection, tray-only
-//     indicator (internal/{winhotkey,inject}).
+//   - Windows: RegisterHotKey PTT, clipboard+Unicode injection, layered overlay
+//     (internal/{winhotkey,inject,overlay}).
 //
 // internal/daemon depends only on the interfaces here; it picks a backend at
 // runtime via Detect.
@@ -122,7 +122,7 @@ func Detect(b Backend) Backend {
 }
 
 // Nop is an Indicator that draws nothing — used on backends that rely on the
-// tray alone (Wayland, Windows), or when no display is available.
+// tray alone (Wayland), or when no display is available.
 type Nop struct{}
 
 func (Nop) Show(string)         {}

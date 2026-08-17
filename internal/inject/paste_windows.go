@@ -16,30 +16,39 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-const defaultPasteKey = "ctrl+v"
+const defaultPasteKey = "unicode"
 
 const (
-	inputKeyboard  = 1
-	keyeventfKeyup = 0x0002
-	vkControl      = 0x11
-	vkLControl     = 0xA2
-	vkRControl     = 0xA3
-	vkShift        = 0x10
-	vkLShift       = 0xA0
-	vkRShift       = 0xA1
-	vkMenu         = 0x12
-	vkLMenu        = 0xA4
-	vkRMenu        = 0xA5
-	vkLWin         = 0x5B
-	vkRWin         = 0x5C
-	vkInsert       = 0x2D
-	cfUnicodeText  = 13
-	inputSize      = 40 // sizeof(INPUT) on windows/amd64
-	ownDeadline    = 500 * time.Millisecond
+	inputKeyboard     = 1
+	keyeventfExtended = 0x0001
+	keyeventfKeyup    = 0x0002
+	keyeventfUnicode  = 0x0004
+	keyeventfScancode = 0x0008
+	vkControl         = 0x11
+	vkLControl        = 0xA2
+	vkRControl        = 0xA3
+	vkShift           = 0x10
+	vkLShift          = 0xA0
+	vkRShift          = 0xA1
+	vkMenu            = 0x12
+	vkLMenu           = 0xA4
+	vkRMenu           = 0xA5
+	vkLWin            = 0x5B
+	vkRWin            = 0x5C
+	vkInsert          = 0x2D
+	cfUnicodeText     = 13
+	inputSize         = 40 // sizeof(INPUT) on windows/amd64
+	ownDeadline       = 500 * time.Millisecond
+	scanLControl      = 0x1D
+	scanLShift        = 0x2A
+	scanRShift        = 0x36
+	scanLMenu         = 0x38
+	scanInsert        = 0x52
+	scanV             = 0x2F
 )
 
-// Paster injects text by putting it on the Win32 clipboard (CF_UNICODETEXT)
-// and synthesizing a paste keystroke with SendInput. Default combo is Ctrl+V.
+// Paster puts text on the Win32 clipboard (CF_UNICODETEXT) and injects it with
+// Unicode SendInput or a configured paste key combination.
 type Paster struct {
 	keys      []uint16 // virtual-key codes in press order
 	pasteKey  string
@@ -54,19 +63,24 @@ var (
 )
 
 var (
-	modUser32            = windows.NewLazySystemDLL("user32.dll")
-	modKernel32          = windows.NewLazySystemDLL("kernel32.dll")
-	procSendInput        = modUser32.NewProc("SendInput")
-	procOpenClipboard    = modUser32.NewProc("OpenClipboard")
-	procCloseClipboard   = modUser32.NewProc("CloseClipboard")
-	procEmptyClipboard   = modUser32.NewProc("EmptyClipboard")
-	procSetClipboardData = modUser32.NewProc("SetClipboardData")
-	procGetClipboardData = modUser32.NewProc("GetClipboardData")
-	procGlobalAlloc      = modKernel32.NewProc("GlobalAlloc")
-	procGlobalLock       = modKernel32.NewProc("GlobalLock")
-	procGlobalUnlock     = modKernel32.NewProc("GlobalUnlock")
-	procGlobalFree       = modKernel32.NewProc("GlobalFree")
-	procRtlMoveMemory    = modKernel32.NewProc("RtlMoveMemory")
+	modUser32                    = windows.NewLazySystemDLL("user32.dll")
+	modKernel32                  = windows.NewLazySystemDLL("kernel32.dll")
+	procSendInput                = modUser32.NewProc("SendInput")
+	procOpenClipboard            = modUser32.NewProc("OpenClipboard")
+	procCloseClipboard           = modUser32.NewProc("CloseClipboard")
+	procEmptyClipboard           = modUser32.NewProc("EmptyClipboard")
+	procSetClipboardData         = modUser32.NewProc("SetClipboardData")
+	procGetClipboardData         = modUser32.NewProc("GetClipboardData")
+	procMapVirtualKey            = modUser32.NewProc("MapVirtualKeyW")
+	procGetForegroundWindow      = modUser32.NewProc("GetForegroundWindow")
+	procGetWindowThreadProcessId = modUser32.NewProc("GetWindowThreadProcessId")
+	procAttachThreadInput        = modUser32.NewProc("AttachThreadInput")
+	procGetCurrentThreadId       = modKernel32.NewProc("GetCurrentThreadId")
+	procGlobalAlloc              = modKernel32.NewProc("GlobalAlloc")
+	procGlobalLock               = modKernel32.NewProc("GlobalLock")
+	procGlobalUnlock             = modKernel32.NewProc("GlobalUnlock")
+	procGlobalFree               = modKernel32.NewProc("GlobalFree")
+	procRtlMoveMemory            = modKernel32.NewProc("RtlMoveMemory")
 )
 
 const gmemMoveable = 0x0002
@@ -76,9 +90,12 @@ func NewPaste(pasteKey string, autoPaste bool) *Paster {
 	if pasteKey == "" {
 		pasteKey = defaultPasteKey
 	}
-	p := &Paster{pasteKey: pasteKey, keys: parsePasteKey(pasteKey)}
+	p := &Paster{pasteKey: pasteKey}
+	if !useUnicodeInput(pasteKey) {
+		p.keys = parsePasteKey(pasteKey)
+	}
 	p.autoPaste.Store(autoPaste)
-	fmt.Fprintf(os.Stderr, "[vole] inject(paste): Win32 clipboard, paste via %q\n", pasteKey)
+	fmt.Fprintf(os.Stderr, "[vole] inject(paste): Win32 clipboard + SendInput %q\n", pasteKey)
 	return p
 }
 
@@ -103,10 +120,19 @@ func (p *Paster) put(text string, paste bool) error {
 		return nil
 	}
 	releaseModifiers()
-	if err := sendKeyCombo(p.keys); err != nil {
+	time.Sleep(20 * time.Millisecond)
+	if useUnicodeInput(p.pasteKey) {
+		if err := sendUnicode(text); err != nil {
+			return fmt.Errorf("inject(paste): Unicode SendInput: %w", err)
+		}
+	} else if err := sendKeyCombo(p.keys); err != nil {
 		return fmt.Errorf("inject(paste): SendInput %s: %w", p.pasteKey, err)
 	}
 	return nil
+}
+
+func useUnicodeInput(spec string) bool {
+	return strings.EqualFold(strings.TrimSpace(spec), "unicode")
 }
 
 func (p *Paster) waitOwned(text string) {
@@ -216,7 +242,7 @@ func parsePasteKey(spec string) []uint16 {
 		p = strings.TrimSpace(p)
 		switch p {
 		case "ctrl", "control", "ctrl_l", "control_l":
-			keys = append(keys, vkControl)
+			keys = append(keys, vkLControl)
 		case "shift", "shift_l":
 			keys = append(keys, vkShift)
 		case "alt", "alt_l", "menu":
@@ -229,12 +255,12 @@ func parsePasteKey(spec string) []uint16 {
 			if len(p) == 1 && p[0] >= 'a' && p[0] <= 'z' {
 				keys = append(keys, uint16(p[0]-'a'+0x41)) // VK_A..VK_Z
 			} else {
-				return []uint16{vkControl, 0x56} // fallback Ctrl+V
+				return []uint16{vkLControl, 0x56} // fallback Ctrl+V
 			}
 		}
 	}
 	if len(keys) == 0 {
-		return []uint16{vkControl, 0x56}
+		return []uint16{vkLControl, 0x56}
 	}
 	return keys
 }
@@ -245,27 +271,125 @@ func releaseModifiers() {
 	}
 }
 
+func sendUnicode(text string) error {
+	return withForegroundInput(func() error {
+		return sendUnicodeUnlocked(text)
+	})
+}
+
 func sendKeyCombo(keys []uint16) error {
-	// press in order, release in reverse
-	seq := make([]uint16, 0, len(keys)*2)
-	flags := make([]uint32, 0, len(keys)*2)
-	for _, k := range keys {
-		seq = append(seq, k)
-		flags = append(flags, 0)
+	return withForegroundInput(func() error {
+		return sendKeyComboUnlocked(keys)
+	})
+}
+
+func sendUnicodeUnlocked(text string) error {
+	units, err := windows.UTF16FromString(text)
+	if err != nil {
+		return err
+	}
+	if len(units) > 0 && units[len(units)-1] == 0 {
+		units = units[:len(units)-1]
+	}
+	if len(units) == 0 {
+		return nil
+	}
+	const chunk = 32
+	for i := 0; i < len(units); i += chunk {
+		j := i + chunk
+		if j > len(units) {
+			j = len(units)
+		}
+		part := units[i:j]
+		n := len(part) * 2
+		buf := make([]byte, inputSize*n)
+		for k, u := range part {
+			writeUnicodeInput(buf, (k*2)*inputSize, u, keyeventfUnicode)
+			writeUnicodeInput(buf, (k*2+1)*inputSize, u, keyeventfUnicode|keyeventfKeyup)
+		}
+		sent, _, err := procSendInput.Call(uintptr(n), uintptr(unsafe.Pointer(&buf[0])), inputSize)
+		if int(sent) != n {
+			return fmt.Errorf("SendInput: %w", err)
+		}
+	}
+	return nil
+}
+
+func writeUnicodeInput(buf []byte, off int, unit uint16, flags uint32) {
+	binary.LittleEndian.PutUint32(buf[off:], inputKeyboard)
+	binary.LittleEndian.PutUint16(buf[off+8:], 0) // wVk must be 0
+	binary.LittleEndian.PutUint16(buf[off+10:], unit)
+	binary.LittleEndian.PutUint32(buf[off+12:], flags)
+}
+
+func withForegroundInput(fn func() error) error {
+	hwnd, _, _ := procGetForegroundWindow.Call()
+	if hwnd == 0 {
+		return fn()
+	}
+	tid, _, _ := procGetWindowThreadProcessId.Call(hwnd, 0)
+	our, _, _ := procGetCurrentThreadId.Call()
+	if tid == 0 || tid == our {
+		return fn()
+	}
+	r, _, _ := procAttachThreadInput.Call(our, tid, 1)
+	if r != 0 {
+		defer procAttachThreadInput.Call(our, tid, 0)
+	}
+	return fn()
+}
+
+func vkScan(vk uint16) uint16 {
+	switch vk {
+	case vkControl, vkLControl, vkRControl:
+		return scanLControl
+	case vkShift, vkLShift:
+		return scanLShift
+	case vkRShift:
+		return scanRShift
+	case vkMenu, vkLMenu, vkRMenu:
+		return scanLMenu
+	case vkInsert:
+		return scanInsert
+	case 0x56: // V
+		return scanV
+	default:
+		r, _, _ := procMapVirtualKey.Call(uintptr(vk), 0)
+		return uint16(r)
+	}
+}
+
+func keyFlags(vk uint16, keyup bool) uint32 {
+	f := uint32(keyeventfScancode)
+	if keyup {
+		f |= keyeventfKeyup
+	}
+	switch vk {
+	case vkRControl, vkRMenu, vkInsert, vkLWin, vkRWin:
+		f |= keyeventfExtended
+	}
+	return f
+}
+
+func writeKeyInput(buf []byte, off int, vk uint16, flags uint32) {
+	binary.LittleEndian.PutUint32(buf[off:], inputKeyboard)
+	binary.LittleEndian.PutUint16(buf[off+8:], vk)
+	binary.LittleEndian.PutUint16(buf[off+10:], vkScan(vk))
+	binary.LittleEndian.PutUint32(buf[off+12:], flags)
+}
+
+func sendKeyComboUnlocked(keys []uint16) error {
+	n := len(keys) * 2
+	buf := make([]byte, inputSize*n)
+	for i, k := range keys {
+		writeKeyInput(buf, i*inputSize, k, keyFlags(k, false))
 	}
 	for i := len(keys) - 1; i >= 0; i-- {
-		seq = append(seq, keys[i])
-		flags = append(flags, keyeventfKeyup)
+		off := (len(keys) + (len(keys) - 1 - i)) * inputSize
+		writeKeyInput(buf, off, keys[i], keyFlags(keys[i], true))
 	}
-	buf := make([]byte, inputSize*len(seq))
-	for i := range seq {
-		off := i * inputSize
-		binary.LittleEndian.PutUint32(buf[off:], inputKeyboard)
-		binary.LittleEndian.PutUint16(buf[off+8:], seq[i])
-		binary.LittleEndian.PutUint32(buf[off+12:], flags[i])
-	}
-	n, _, err := procSendInput.Call(uintptr(len(seq)), uintptr(unsafe.Pointer(&buf[0])), inputSize)
-	if int(n) != len(seq) {
+	sent, _, err := procSendInput.Call(uintptr(n), uintptr(unsafe.Pointer(&buf[0])), inputSize)
+	if int(sent) != n {
 		return fmt.Errorf("SendInput: %w", err)
 	}
 	return nil
@@ -278,10 +402,11 @@ func sendKey(vk uint16, flags uint32) error {
 func sendKeyComboFlags(keys []uint16, flags []uint32) error {
 	buf := make([]byte, inputSize*len(keys))
 	for i := range keys {
-		off := i * inputSize
-		binary.LittleEndian.PutUint32(buf[off:], inputKeyboard)
-		binary.LittleEndian.PutUint16(buf[off+8:], keys[i])
-		binary.LittleEndian.PutUint32(buf[off+12:], flags[i])
+		f := flags[i] | keyeventfScancode
+		if keyFlags(keys[i], false)&keyeventfExtended != 0 {
+			f |= keyeventfExtended
+		}
+		writeKeyInput(buf, i*inputSize, keys[i], f)
 	}
 	n, _, err := procSendInput.Call(uintptr(len(keys)), uintptr(unsafe.Pointer(&buf[0])), inputSize)
 	if int(n) != len(keys) {

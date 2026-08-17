@@ -36,6 +36,7 @@ type Config struct {
 	WhisperPrompt      bool    `yaml:"whisper_prompt"`      // seed whisper with the last dictation as initial_prompt (steadies short phrases); default true
 	Translate          bool    `yaml:"translate"`           // the alt/shift (dictate-alt) language translates speech to English: whisper transcribes with the primary (dictate) language pinned and the post-process LLM translates the clean source transcript to English; only meaningful with lang_shift: en and a post-process script. Default false
 	EnglishInput       bool    `yaml:"english_input"`       // tray toggle: makes the Shift/dictate-alt combo transcribe English speech → English text (with the repair post-process hook) instead of translating Russian→English. The base combo is unaffected (always the base language). Runtime-toggled in the tray; default false.
+	Merge              bool    `yaml:"merge"`               // tray toggle: a dictation started while the previous one is still being processed continues it — the new raw transcript is appended to the pending one and the whole text is post-processed again (the in-flight run is abandoned), so a thought can be finished in several takes and lands as one insertion. Runtime-toggled in the tray; default true.
 	HistorySize        int     `yaml:"history_size"`        // dictations kept in the history / tray menu
 	HistoryFile        string  `yaml:"history_file"`        // path to the dictation history (JSONL)
 	DebugRecord        string  `yaml:"debug_record"`        // debug: dump raw recordings near this WAV path (empty = off)
@@ -53,6 +54,7 @@ func baseDefaults() Config {
 		AutoPaste:          true,
 		PostProcessTimeout: 30,   // generous: cloud/vision post-processing may take several seconds
 		WhisperPrompt:      true, // seed whisper with the last dictation — steadies short phrases
+		Merge:              true, // continue a dictation that is still being processed instead of starting a new one
 		HistorySize:        256,
 		DebugRecordKeep:    3,
 	}

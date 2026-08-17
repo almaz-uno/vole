@@ -8,12 +8,18 @@ package postprocess
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"strings"
 	"time"
 )
+
+// ErrCanceled is returned by RunContext when the caller's context is cancelled:
+// the script was killed on request, which is not a script failure. Callers use
+// errors.Is to tell an abandoned run from a broken one.
+var ErrCanceled = errors.New("post-process: canceled")
 
 // defaultTimeout bounds a run: a hung script must not stall dictation. The whole
 // process group (unix) or job object (Windows) is killed when the deadline elapses.
@@ -46,7 +52,15 @@ func RunTimeout(script, text string, timeout time.Duration) (string, error) {
 // daemon's environment (e.g. VOLE_PP_TRANSLATE=1 to switch the script into its
 // translate-to-English mode). env may be nil.
 func RunTimeoutEnv(script, text string, timeout time.Duration, env []string) (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	return RunContext(context.Background(), script, text, timeout, env)
+}
+
+// RunContext is RunTimeoutEnv under a caller-supplied context: cancelling it
+// kills the script (the whole process group) and returns ErrCanceled, so the
+// daemon can abandon a slow post-processing run on user request. The timeout
+// still applies on top of ctx.
+func RunContext(ctx context.Context, script, text string, timeout time.Duration, env []string) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
 	name, args, err := parseCommand(script)
@@ -70,6 +84,11 @@ func RunTimeoutEnv(script, text string, timeout time.Duration, env []string) (st
 	if err := cmd.Wait(); err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
 			return "", fmt.Errorf("post-process: %s timed out after %s", script, timeout)
+		}
+		// Cancelled by the caller: the kill is expected, not a script failure —
+		// report it distinctly so the daemon does not log it as an error.
+		if ctx.Err() == context.Canceled {
+			return "", ErrCanceled
 		}
 		sep := ""
 		if s := strings.TrimSpace(stderr.String()); s != "" {

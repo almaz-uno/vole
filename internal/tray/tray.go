@@ -40,6 +40,7 @@ type Tray struct {
 	mAutoPaste                      *systray.MenuItem // "Auto-paste" checkbox; nil if not applicable
 	mPostProcess                    *systray.MenuItem // "Post-process" checkbox; nil if not applicable
 	mEnglishInput                   *systray.MenuItem // "English input" checkbox; always shown
+	mMerge                          *systray.MenuItem // "Merge dictations" checkbox; nil if not applicable
 
 	onHistory func(idx int) // invoked with the index of a clicked history entry
 
@@ -57,10 +58,11 @@ type Tray struct {
 // non-nil, adds a "Post-process" checkbox (initial state postProcessOn) that runs
 // it on each click; pass nil to omit the item (e.g. no post-process script
 // configured). onEnglishInput adds an "English input" checkbox (initial state
-// englishInputOn) that runs it on each click; pass nil to omit. version is the
-// build version, shown as a disabled menu title and in the tooltip. The returned
-// Tray can be updated immediately, before the tray host is ready.
-func Run(onToggle, onQuit, onTap func(), onHistory func(idx int), historySize int, onAutoPaste func(), autoPasteOn bool, onPostProcess func(), postProcessOn bool, onEnglishInput func(), englishInputOn bool, version string) *Tray {
+// englishInputOn) that runs it on each click; pass nil to omit. onMerge adds a
+// "Merge dictations" checkbox (initial state mergeOn) the same way. version is
+// the build version, shown as a disabled menu title and in the tooltip. The
+// returned Tray can be updated immediately, before the tray host is ready.
+func Run(onToggle, onQuit, onTap func(), onHistory func(idx int), historySize int, onAutoPaste func(), autoPasteOn bool, onPostProcess func(), postProcessOn bool, onEnglishInput func(), englishInputOn bool, onMerge func(), mergeOn bool, version string) *Tray {
 	t := &Tray{
 		disabled:  stateIcon(colDisabled),
 		idle:      stateIcon(colIdle),
@@ -109,6 +111,12 @@ func Run(onToggle, onQuit, onTap func(), onHistory func(idx int), historySize in
 				"Shift-combo: transcribe English speech (off: translate Russian→English)", englishInputOn)
 			englishInputCh = t.mEnglishInput.ClickedCh
 		}
+		var mergeCh <-chan struct{}
+		if onMerge != nil {
+			t.mMerge = systray.AddMenuItemCheckbox("Merge dictations",
+				"Dictating again before the text lands continues it instead of starting a new one", mergeOn)
+			mergeCh = t.mMerge.ClickedCh
+		}
 		mQuit := systray.AddMenuItem("Quit", "Stop vole")
 		go func() {
 			for {
@@ -126,6 +134,10 @@ func Run(onToggle, onQuit, onTap func(), onHistory func(idx int), historySize in
 				case <-englishInputCh: // nil when omitted: this case never fires
 					if onEnglishInput != nil {
 						onEnglishInput()
+					}
+				case <-mergeCh: // nil when omitted: this case never fires
+					if onMerge != nil {
+						onMerge()
 					}
 				case <-mQuit.ClickedCh:
 					systray.Quit()
@@ -245,6 +257,18 @@ func (t *Tray) SetEnglishInput(on bool) {
 		t.mEnglishInput.Check()
 	} else {
 		t.mEnglishInput.Uncheck()
+	}
+}
+
+// SetMerge reflects the merge-dictations toggle state in the menu checkbox.
+func (t *Tray) SetMerge(on bool) {
+	if t.mMerge == nil {
+		return
+	}
+	if on {
+		t.mMerge.Check()
+	} else {
+		t.mMerge.Uncheck()
 	}
 }
 

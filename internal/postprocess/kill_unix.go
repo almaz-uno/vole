@@ -12,8 +12,6 @@ func splitCommandLine(s string) ([]string, error) {
 	return strings.Fields(s), nil
 }
 
-type unixKiller struct{}
-
 func configureKill(cmd *exec.Cmd) killer {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Cancel = func() error {
@@ -23,5 +21,5 @@ func configureKill(cmd *exec.Cmd) killer {
 		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) // the whole group
 		return cmd.Process.Kill()
 	}
-	return unixKiller{}
+	return nopKiller{}
 }

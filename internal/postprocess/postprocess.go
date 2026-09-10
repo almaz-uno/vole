@@ -77,18 +77,31 @@ func RunContext(ctx context.Context, script, text string, timeout time.Duration,
 	killer := configureKill(cmd)
 	cmd.WaitDelay = pipeDrain
 
-	if err := cmd.Start(); err != nil {
-		return "", fmt.Errorf("post-process: %s: %w", script, err)
-	}
-	killer.afterStart(cmd)
-	if err := cmd.Wait(); err != nil {
+	// Start fails on an already-cancelled ctx, so both stages share one error
+	// path: the deadline and the cancel are classified before the script is
+	// blamed for them.
+	fail := func(err error) error {
 		if ctx.Err() == context.DeadlineExceeded {
-			return "", fmt.Errorf("post-process: %s timed out after %s", script, timeout)
+			return fmt.Errorf("post-process: %s timed out after %s", script, timeout)
 		}
 		// Cancelled by the caller: the kill is expected, not a script failure —
 		// report it distinctly so the daemon does not log it as an error.
 		if ctx.Err() == context.Canceled {
-			return "", ErrCanceled
+			return ErrCanceled
+		}
+		return nil
+	}
+
+	if err := cmd.Start(); err != nil {
+		if e := fail(err); e != nil {
+			return "", e
+		}
+		return "", fmt.Errorf("post-process: %s: %w", script, err)
+	}
+	killer.afterStart(cmd)
+	if err := cmd.Wait(); err != nil {
+		if e := fail(err); e != nil {
+			return "", e
 		}
 		sep := ""
 		if s := strings.TrimSpace(stderr.String()); s != "" {

@@ -11,6 +11,21 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+
+# The runtime installer ships with the LunarG SDK; take $env:VULKAN_SDK when the
+# SDK is on PATH, else the newest C:\VulkanSDK\<version> present.
+function Find-VulkanRT {
+    if ($env:VULKAN_SDK) {
+        $p = Join-Path $env:VULKAN_SDK "Helpers\VulkanRT.exe"
+        if (Test-Path $p) { return $p }
+    }
+    $found = Get-ChildItem "C:\VulkanSDK\*\Helpers\VulkanRT.exe" -ErrorAction SilentlyContinue |
+        Sort-Object { [version]$_.Directory.Parent.Name } -ErrorAction SilentlyContinue |
+        Select-Object -Last 1
+    if ($found) { return $found.FullName }
+    return "C:\VulkanSDK\<version>\Helpers\VulkanRT.exe"
+}
+
 $Here = $PSScriptRoot
 if (-not $Here) { $Here = Split-Path -Parent $MyInvocation.MyCommand.Path }
 if (-not $Here) { $Here = (Get-Location).Path }
@@ -18,7 +33,7 @@ $RepoRoot = [IO.Path]::GetFullPath((Join-Path $Here ".."))
 if (-not $OutDir) { $OutDir = Join-Path $RepoRoot ".local\vole-windows-offline" }
 if (-not $BinDir) { $BinDir = Join-Path $RepoRoot ".bin" }
 if (-not $ModelsDir) { $ModelsDir = Join-Path $env:LOCALAPPDATA "vole\models" }
-if (-not $VulkanRT) { $VulkanRT = "C:\VulkanSDK\1.4.357.0\Helpers\VulkanRT.exe" }
+if (-not $VulkanRT) { $VulkanRT = Find-VulkanRT }
 $OutDir = [IO.Path]::GetFullPath($OutDir)
 $BinDir = [IO.Path]::GetFullPath($BinDir)
 
@@ -64,16 +79,13 @@ New-Item -ItemType Directory -Force -Path $payloadBin, $payloadModels, $payloadV
 
 function Copy-Robo([string]$srcDir, [string]$dstDir, [string[]]$files) {
     New-Item -ItemType Directory -Force -Path $dstDir | Out-Null
-    $args = @($srcDir, $dstDir) + $files + @("/NFL", "/NDL", "/NJH", "/NJS", "/nc", "/ns", "/np", "/R:2", "/W:2")
-    & robocopy @args | Out-Null
+    $roboArgs = @($srcDir, $dstDir) + $files + @("/NFL", "/NDL", "/NJH", "/NJS", "/nc", "/ns", "/np", "/R:2", "/W:2")
+    & robocopy @roboArgs | Out-Null
     if ($LASTEXITCODE -ge 8) { throw "robocopy failed ($LASTEXITCODE): $srcDir -> $dstDir" }
 }
 
 Write-Host "Copying vole.exe and DLLs"
 Copy-Robo $BinDir $payloadBin $requiredDlls
-if (Test-Path (Join-Path $BinDir "libparakeet.dll")) {
-    Copy-Item (Join-Path $BinDir "libparakeet.dll") $payloadBin -Force
-}
 
 Write-Host "Copying whisper models (about 3 GB; this can take a few minutes)"
 Copy-Robo $ModelsDir $payloadModels @("ggml-large-v3.bin", "ggml-silero-v5.1.2.bin")

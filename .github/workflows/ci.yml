@@ -96,7 +96,9 @@ jobs:
       - name: Test (non-cgo packages)
         shell: pwsh
         run: |
-          go test ./internal/config ./internal/platform ./internal/history ./internal/postprocess ./internal/models ./internal/winhotkey ./internal/inject ./internal/ipc
+          go test ./internal/audio ./internal/config ./internal/history ./internal/inject `
+            ./internal/ipc ./internal/models ./internal/overlay ./internal/platform `
+            ./internal/postprocess ./internal/tray ./internal/winhotkey
 
       - name: Build vole.exe
         shell: pwsh

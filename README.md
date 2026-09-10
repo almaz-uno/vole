@@ -1,6 +1,6 @@
 # vole
 
-Offline voice dictation for Linux (X11 and Wayland). A single Go binary runs a
+Offline voice dictation for Linux (X11 and Wayland) and Windows. A single Go binary runs a
 resident daemon that keeps a [whisper.cpp](https://github.com/ggerganov/whisper.cpp)
 model in VRAM and types recognized speech into the focused window — push-to-talk:
 hold the key, speak, release.
@@ -17,8 +17,9 @@ be inconvenient).
 - **On-the-fly language switch** (X11): base language by default, hold **Shift**
   while the key is down to switch to the second language (e.g. `ru` ↔ `en`). On
   Wayland the two languages are separate, individually-bound shortcuts.
-- **Pluggable backend**: X11 and Wayland implementations behind one interface,
-  selected automatically from the session (override with `backend:` / `VOLE_BACKEND`).
+- **Pluggable backend**: X11, Wayland, and Windows implementations behind one
+  interface, selected automatically from the OS/session (override with
+  `backend:` / `VOLE_BACKEND`).
 - **Floating indicator** at the cursor (X11): status dot + live VU meter +
   language label. On Wayland the tray reflects state (a layer-shell overlay may
   come later).
@@ -136,3 +137,139 @@ For a bare i3 setup, start it from the WM so the X environment is current:
 ```
 exec --no-startup-id systemctl --user import-environment DISPLAY XAUTHORITY DBUS_SESSION_BUS_ADDRESS && systemctl --user start vole.service
 ```
+
+## Windows
+
+Windows 10/11 with a **working Vulkan GPU driver**. A small click-through overlay
+(red while you hold the hotkey, amber while whisper runs) sits at the top of the
+screen so status does not depend on the tray overflow. There is no live-Shift
+language switch. Injection defaults to Unicode SendInput; set `paste_key` to a
+combination such as `ctrl+v` or `shift+insert` to use that combination instead.
+The clipboard is still set for a manual paste.
+
+This is a user-session tray app, **not** a Windows Service (`services.msc`). A
+service would run in Session 0 and would not own a tray icon or paste into the
+interactive desktop.
+
+### Requirements (Windows)
+
+- Windows 10/11, microphone, GPU + Vulkan driver (vendor package, not the SDK).
+- MinGW-w64 **gcc** (CGO), CMake, Ninja (optional), [Vulkan SDK](https://vulkan.lunarg.com/) to *build* whisper.cpp.
+- Runtime DLLs next to `vole.exe`: `whisper.dll`, `ggml*.dll`, `vulkan-1.dll` (copied by the build script).
+
+CPU-only whisper is a developer fallback, not a supported release.
+
+### Build (Windows)
+
+whisper.cpp is linked through a **Windows-specific** cgo path (`internal/whisper/cgo_windows.go`).
+Linux `pkg-config` / `~/.local` is not used.
+
+```powershell
+# 1. Vulkan SDK installed; $env:VULKAN_SDK set (reopen the shell after install)
+# 2. gcc, g++, cmake on PATH (MSYS2 mingw64 or chocolatey mingw)
+
+.\scripts\build-whisper-windows.ps1   # -> deps/whisper (headers, import libs, DLLs)
+.\scripts\build-windows.ps1           # -> .bin/vole.exe + DLLs
+```
+
+`CGO_CFLAGS` / `CGO_LDFLAGS` can override the default `-Ideps/whisper/include` and
+`-Ldeps/whisper/lib … -lwhisper -lggml -lggml-base -lggml-cpu -lggml-vulkan -lvulkan-1`.
+
+Working directory at runtime **must** be the folder that contains `vole.exe` and
+the DLLs (Task Scheduler “Start in”).
+
+### Vulkan log marker
+
+On a successful GPU load, stderr contains ggml/whisper Vulkan lines, for example:
+
+```
+ggml_vulkan: Found 1 Vulkan devices:
+[vole] whisper: ... VULKAN = 1 ...
+```
+
+`vole transcribe file.wav` prints the same marker (CLI stdout/stderr stay attached;
+only the `daemon` process may hide *its own* console). If the driver is missing,
+model load fails with an explicit error — silent CPU fallback is not a success.
+
+### Configuring vole on Windows
+
+Config file: `%AppData%\vole\config.yaml` (create the directory if needed).
+Copy comments from [`config.yaml.example`](config.yaml.example). **Restart the
+daemon after editing the yaml.** Environment overrides: `VOLE_MODEL`, `VOLE_VAD`,
+`VOLE_SOCK`, `VOLE_BACKEND`, `VOLE_RECORD`, `VOLE_POSTPROCESS`.
+
+| Setting | Default | Where to change |
+|---------|---------|-----------------|
+| `backend` | `auto` → `windows` | yaml / `VOLE_BACKEND` |
+| `inject` / `paste_key` | `paste` / `unicode` | yaml only |
+| `auto_paste` | `true` | yaml + **tray checkbox** |
+| `hotkey.mods` / `key` | `Control+Alt` / `d` | yaml only (restart) |
+| `hotkey.lang` / `lang_shift` | `ru` / `en` | yaml only (restart) |
+| `model` / `vad` | `%LocalAppData%\vole\models\…` | yaml / `VOLE_MODEL` / `VOLE_VAD` |
+| `postprocess` | empty | yaml / `VOLE_POSTPROCESS` |
+| `postprocess_on` | `false` | yaml + **tray checkbox** (only if a path is set) |
+| `english_input` | `false` | yaml + tray checkbox |
+
+IPC: named pipe `\\.\pipe\vole` (`VOLE_SOCK` to override). History:
+`%LocalAppData%\vole\history.jsonl`. Models: `vole download` (or first daemon
+start) writes `%LocalAppData%\vole\models\`.
+
+**Default hotkeys:** hold **Ctrl+Alt+D** (Russian) or **Ctrl+Alt+Shift+D** (English).
+Change `hotkey.mods` / `key` in yaml and restart. There is no live-Shift: the
+Shift combo is a second `RegisterHotKey`. Windows requires at least one
+modifier; modifier-free global PTT bindings are rejected because their release
+cannot be observed reliably through `RegisterHotKey`.
+
+**Known shortcut conflicts** (do not use these as defaults):
+
+- `Win+Ctrl+D` — Windows virtual desktop
+- `Win+H` — Windows voice typing
+- `Win+Shift+S` — Snipping Tool (if you bind Shift+Win)
+
+If `RegisterHotKey` fails because another app owns the combo, vole logs the error
+(and shows a notification) and **keeps running** without PTT; tray and
+`vole start` / `vole stop` still work. Pick another combo in yaml.
+
+**Post-process:** set `postprocess` to an executable, or a command line run
+directly (no shell):
+
+```yaml
+postprocess: powershell.exe -NoProfile -File C:\Users\you\vole-post.ps1
+postprocess_on: true
+```
+
+The script reads the transcript on stdin and writes the improved text on stdout.
+On error, timeout, or empty stdout vole pastes the raw transcript. A hung script
+is killed via a **Windows job object** (the whole process tree, including
+children of `powershell.exe`). Toggle at runtime with the tray **Post-process**
+checkbox (hidden when no path is configured).
+
+### Tray
+
+`vole daemon` is a tray application. The icon sits in the notification area
+(bottom-right; it may land in the overflow `^` — pin it via the taskbar
+overflow settings). Recording and transcribing status also appear as a small
+panel at the **top of the screen** (red / amber / blue), so you do not need the
+tray visible. Right-click the tray icon for the menu: Enable/Disable dictation,
+Auto-paste, Post-process, English input, Recent dictations, Quit. Left-click
+start/stop is supported when the tray host delivers it.
+
+A console window is **not** required. If you start vole from `cmd.exe`, that
+console stays so you can read Vulkan logs. Double-click / Task Scheduler hide
+vole’s own console.
+
+### Autostart
+
+**Recommended — Task Scheduler** (current user, after logon):
+
+1. Task Scheduler → Create Task (not a basic task).
+2. General: name `vole`; **Run only when user is logged on** (needed for the tray).
+3. Triggers: **At log on** → specific user (you).
+4. Actions: Start a program → `C:\path\to\.bin\vole.exe` with arguments `daemon`.
+5. **Start in** (working directory): `C:\path\to\.bin` — the folder with `vole.exe` **and** the DLLs.
+6. Do **not** choose “Run whether user is logged on or not”.
+
+**Alternative — Startup folder:** `Win+R` → `shell:startup` → shortcut to
+`vole.exe daemon`, “Start in” = the `.bin` folder.
+
+Do **not** install vole as a Windows Service.

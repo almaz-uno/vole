@@ -4,10 +4,8 @@
 package tray
 
 import (
-	"bytes"
 	"image"
 	"image/color"
-	"image/png"
 	"math"
 	"strings"
 	"sync"
@@ -66,11 +64,11 @@ type Tray struct {
 // returned Tray can be updated immediately, before the tray host is ready.
 func Run(onToggle, onQuit, onTap func(), onHistory func(idx int), historySize int, onAutoPaste func(), autoPasteOn bool, onPostProcess func(), postProcessOn bool, onEnglishInput func(), englishInputOn bool, onMerge func(), mergeOn bool, version string) *Tray {
 	t := &Tray{
-		disabled:  pngCircle(colDisabled),
-		idle:      pngCircle(colIdle),
-		rec:       pngCircle(colRec),
-		proc:      pngCircle(colProc),
-		post:      pngCircle(colPost),
+		disabled:  stateIcon(colDisabled),
+		idle:      stateIcon(colIdle),
+		rec:       stateIcon(colRec),
+		proc:      stateIcon(colProc),
+		post:      stateIcon(colPost),
 		tooltip:   "vole " + version + " — voice dictation",
 		onHistory: onHistory,
 	}
@@ -300,8 +298,13 @@ func (t *Tray) SetState(s State) {
 	}
 }
 
-// pngCircle draws a filled antialiased circle of the given color (PNG, alpha).
-func pngCircle(c color.NRGBA) []byte {
+// stateIcon is the tray image for a status color (PNG on Linux, ICO on Windows).
+func stateIcon(c color.NRGBA) []byte {
+	return trayIconBytes(circleImage(c))
+}
+
+// circleImage draws a filled antialiased circle of the given color.
+func circleImage(c color.NRGBA) *image.NRGBA {
 	const s = 64
 	img := image.NewNRGBA(image.Rect(0, 0, s, s))
 	cx, cy, r := float64(s)/2, float64(s)/2, float64(s)*0.40
@@ -318,7 +321,5 @@ func pngCircle(c color.NRGBA) []byte {
 			img.SetNRGBA(x, y, color.NRGBA{c.R, c.G, c.B, uint8(float64(c.A) * cov)})
 		}
 	}
-	var buf bytes.Buffer
-	_ = png.Encode(&buf, img)
-	return buf.Bytes()
+	return img
 }

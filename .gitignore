@@ -1,3 +1,6 @@
-.vscode/
 .bin/
+.vscode/
 __pycache__/
+deps/whisper/
+deps/whisper.cpp/
+.local/vole-windows-offline/

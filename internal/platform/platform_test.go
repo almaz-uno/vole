@@ -1,8 +1,35 @@
 package platform
 
-import "testing"
+import (
+	"runtime"
+	"testing"
+)
 
 func TestDetect(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Run("auto -> windows on GOOS=windows", func(t *testing.T) {
+			if got := Detect(BackendAuto); got != BackendWindows {
+				t.Errorf("Detect(auto) = %q, want windows", got)
+			}
+		})
+		t.Run("unknown value -> windows on GOOS=windows", func(t *testing.T) {
+			if got := Detect(Backend("nonsense")); got != BackendWindows {
+				t.Errorf("Detect(nonsense) = %q, want windows", got)
+			}
+		})
+		t.Run("explicit windows", func(t *testing.T) {
+			if got := Detect(BackendWindows); got != BackendWindows {
+				t.Errorf("Detect(windows) = %q, want windows", got)
+			}
+		})
+		t.Run("explicit x11 still honored", func(t *testing.T) {
+			if got := Detect(BackendX11); got != BackendX11 {
+				t.Errorf("Detect(x11) = %q, want x11", got)
+			}
+		})
+		return
+	}
+
 	cases := []struct {
 		name        string
 		cfg         Backend
@@ -12,6 +39,7 @@ func TestDetect(t *testing.T) {
 	}{
 		{"explicit x11 wins over wayland env", BackendX11, "wayland-0", "wayland", BackendX11},
 		{"explicit wayland wins over x11 env", BackendWayland, "", "x11", BackendWayland},
+		{"explicit windows honored on linux", BackendWindows, "", "x11", BackendWindows},
 		{"auto -> wayland via WAYLAND_DISPLAY", BackendAuto, "wayland-0", "", BackendWayland},
 		{"auto -> wayland via XDG_SESSION_TYPE", BackendAuto, "", "Wayland", BackendWayland},
 		{"auto -> x11 when nothing set", BackendAuto, "", "x11", BackendX11},

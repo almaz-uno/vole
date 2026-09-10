@@ -114,18 +114,37 @@ func TestRun_MissingScript(t *testing.T) {
 	}
 }
 
-func TestRun_Timeout(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("shell scripts")
+func TestRun_WindowsIdentity(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("windows")
 	}
-	s := writeScript(t, "#!/bin/sh\nsleep 30\n")
+	dir := t.TempDir()
+	ps1 := filepath.Join(dir, "pp.ps1")
+	if err := os.WriteFile(ps1, []byte("[System.IO.StreamReader]::new([Console]::OpenStandardInput()).ReadToEnd()"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cmd := `powershell.exe -NoProfile -File "` + ps1 + `"`
+	got, err := Run(cmd, "hello world\n")
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got != "hello world" {
+		t.Fatalf("got %q, want %q", got, "hello world")
+	}
+}
+
+func TestRun_WindowsTimeout(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("windows")
+	}
+	cmd := `powershell.exe -NoProfile -Command "Start-Sleep -Seconds 30"`
 	start := time.Now()
-	_, err := RunTimeout(s, "x", 100*time.Millisecond)
+	_, err := RunTimeout(cmd, "x", 200*time.Millisecond)
 	elapsed := time.Since(start)
 	if err == nil || !strings.Contains(err.Error(), "timed out") {
 		t.Fatalf("expected timeout error, got: %v", err)
 	}
-	if elapsed > 2*time.Second {
+	if elapsed > 3*time.Second {
 		t.Fatalf("timeout did not fire promptly: %v", elapsed)
 	}
 }

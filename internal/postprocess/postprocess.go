@@ -13,7 +13,6 @@ import (
 	"os"
 	"os/exec"
 	"strings"
-	"syscall"
 	"time"
 )
 
@@ -23,7 +22,7 @@ import (
 var ErrCanceled = errors.New("post-process: canceled")
 
 // defaultTimeout bounds a run: a hung script must not stall dictation. The whole
-// process group is SIGKILLed when the deadline elapses.
+// process group (unix) or job object (Windows) is killed when the deadline elapses.
 const defaultTimeout = 15 * time.Second
 
 // pipeDrain is how long Run waits for the script to release its stdout/stderr
@@ -36,8 +35,10 @@ const pipeDrain = 500 * time.Millisecond
 // caller can fall back to the raw transcript — if the script is missing, exits
 // non-zero, times out, or returns empty/whitespace-only output.
 //
-// script is executed directly (not via a shell), so it must be executable and
-// carry its own shebang (e.g. #!/bin/sh, #!/usr/bin/env python3).
+// script is executed directly (not via a shell). On Unix it must be executable
+// and carry its own shebang. On Windows a path to a .exe works as-is; a command
+// line such as `powershell.exe -NoProfile -File C:\path\vole-post.ps1` is split
+// into argv when the whole string is not an existing file.
 func Run(script, text string) (string, error) {
 	return RunTimeout(script, text, defaultTimeout)
 }
@@ -62,34 +63,45 @@ func RunContext(ctx context.Context, script, text string, timeout time.Duration,
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, script)
+	name, args, err := parseCommand(script)
+	if err != nil {
+		return "", fmt.Errorf("post-process: %w", err)
+	}
+
+	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Env = append(os.Environ(), env...)
 	cmd.Stdin = strings.NewReader(text)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
-	// Put the script in its own process group so a timeout can SIGKILL the whole
-	// group — not just the direct child. Otherwise a shell that forks its command
-	// (a grandchild holding the stdout pipe) survives a child-only kill and keeps
-	// Run blocked until the grandchild exits on its own.
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	cmd.Cancel = func() error {
-		if cmd.Process == nil {
-			return nil
-		}
-		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) // the whole group
-		return cmd.Process.Kill()
-	}
+	killer := configureKill(cmd)
 	cmd.WaitDelay = pipeDrain
 
-	if err := cmd.Run(); err != nil {
+	// Start fails on an already-cancelled ctx, so both stages share one error
+	// path: the deadline and the cancel are classified before the script is
+	// blamed for them.
+	fail := func(err error) error {
 		if ctx.Err() == context.DeadlineExceeded {
-			return "", fmt.Errorf("post-process: %s timed out after %s", script, timeout)
+			return fmt.Errorf("post-process: %s timed out after %s", script, timeout)
 		}
 		// Cancelled by the caller: the kill is expected, not a script failure —
 		// report it distinctly so the daemon does not log it as an error.
 		if ctx.Err() == context.Canceled {
-			return "", ErrCanceled
+			return ErrCanceled
+		}
+		return nil
+	}
+
+	if err := cmd.Start(); err != nil {
+		if e := fail(err); e != nil {
+			return "", e
+		}
+		return "", fmt.Errorf("post-process: %s: %w", script, err)
+	}
+	killer.afterStart(cmd)
+	if err := cmd.Wait(); err != nil {
+		if e := fail(err); e != nil {
+			return "", e
 		}
 		sep := ""
 		if s := strings.TrimSpace(stderr.String()); s != "" {
@@ -97,9 +109,36 @@ func RunContext(ctx context.Context, script, text string, timeout time.Duration,
 		}
 		return "", fmt.Errorf("post-process: %s: %w%s", script, err, sep)
 	}
-	out := strings.TrimSuffix(strings.TrimSuffix(stdout.String(), "\n"), "\r")
+	out := strings.TrimRight(stdout.String(), "\r\n")
 	if strings.TrimSpace(out) == "" {
 		return "", fmt.Errorf("post-process: %s returned empty output", script)
 	}
 	return out, nil
 }
+
+func parseCommand(script string) (name string, args []string, err error) {
+	script = strings.TrimSpace(script)
+	if script == "" {
+		return "", nil, fmt.Errorf("empty command")
+	}
+	if fi, err := os.Stat(script); err == nil && !fi.IsDir() {
+		return script, nil, nil
+	}
+	parts, err := splitCommandLine(script)
+	if err != nil {
+		return "", nil, err
+	}
+	if len(parts) == 0 {
+		return "", nil, fmt.Errorf("empty command")
+	}
+	return parts[0], parts[1:], nil
+}
+
+// killer tears down a timed-out post-process tree.
+type killer interface {
+	afterStart(*exec.Cmd)
+}
+
+type nopKiller struct{}
+
+func (nopKiller) afterStart(*exec.Cmd) {}

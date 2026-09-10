@@ -1,3 +1,5 @@
+//go:build linux
+
 package daemon
 
 import (
@@ -84,6 +86,7 @@ func (d *Daemon) startHotkey(backend platform.Backend) {
 	}
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "vole daemon: hotkey:", err)
+		notify("🎤 vole", "hotkey unavailable — dictation via tray/CLI still works")
 		return
 	}
 	d.mu.Lock()

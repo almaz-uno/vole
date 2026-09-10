@@ -1,5 +1,5 @@
-// Package config holds vole's configuration: defaults, the
-// ~/.config/vole/config.yaml file, and per-setting environment overrides.
+// Package config holds vole's configuration: defaults, the config.yaml file,
+// and per-setting environment overrides.
 package config
 
 import (
@@ -12,10 +12,10 @@ import (
 
 // Hotkey describes the PTT binding with Shift-based language switching.
 type Hotkey struct {
-	Mods      string `yaml:"mods"`       // "Super+Control"
+	Mods      string `yaml:"mods"`       // "Super+Control" (Linux) / "Control+Alt" (Windows; at least one required)
 	Key       string `yaml:"key"`        // "d"
 	Lang      string `yaml:"lang"`       // language without Shift
-	LangShift string `yaml:"lang_shift"` // language while Shift is held
+	LangShift string `yaml:"lang_shift"` // language while Shift is held / alt hotkey
 }
 
 // Config is the full daemon configuration.
@@ -26,9 +26,9 @@ type Config struct {
 	Model              string  `yaml:"model"`
 	VAD                string  `yaml:"vad"`
 	Socket             string  `yaml:"socket"`
-	Backend            string  `yaml:"backend"`             // input/output backend: auto|x11|wayland
+	Backend            string  `yaml:"backend"`             // input/output backend: auto|x11|wayland|windows
 	Inject             string  `yaml:"inject"`              // injection method: auto|type|paste
-	PasteKey           string  `yaml:"paste_key"`           // paste keystroke for inject=paste (xdotool key spec); default Shift+Insert
+	PasteKey           string  `yaml:"paste_key"`           // inject=paste input; Linux: xdotool spec (default Shift+Insert); Windows: unicode or SendInput combo (default unicode)
 	AutoPaste          bool    `yaml:"auto_paste"`          // inject=paste: auto-paste after dictation (false = copy to clipboard only)
 	PostProcess        string  `yaml:"postprocess"`         // path to a post-processing script (stdin=transcript, stdout=improved); empty = off
 	PostProcessOn      bool    `yaml:"postprocess_on"`      // run post-processing at startup (runtime-toggled in the tray); default false
@@ -43,16 +43,12 @@ type Config struct {
 	DebugRecordKeep    int     `yaml:"debug_record_keep"`   // debug: how many recent raw recordings to retain (min 1)
 }
 
-// Defaults returns the default configuration (used when no file is present).
-func Defaults() Config {
-	home := os.Getenv("HOME")
+// baseDefaults returns OS-independent field defaults. OS-specific Defaults()
+// fills paths, hotkey, paste_key, and socket on top of this.
+func baseDefaults() Config {
 	return Config{
-		Hotkey:             Hotkey{Mods: "Super+Control", Key: "d", Lang: "ru", LangShift: "en"},
 		SilenceThreshold:   0.005,
 		VADThreshold:       0.3,
-		Model:              filepath.Join(home, ".local/share/dictation/whisper.cpp/models/ggml-large-v3.bin"),
-		VAD:                filepath.Join(home, ".local/share/dictation/whisper.cpp/models/ggml-silero-v5.1.2.bin"),
-		Socket:             socketDefault(),
 		Backend:            "auto",
 		Inject:             "paste", // clipboard paste: instant, block insert, layout-independent
 		AutoPaste:          true,
@@ -60,17 +56,8 @@ func Defaults() Config {
 		WhisperPrompt:      true, // seed whisper with the last dictation — steadies short phrases
 		Merge:              true, // continue a dictation that is still being processed instead of starting a new one
 		HistorySize:        256,
-		HistoryFile:        stateDefault(),
 		DebugRecordKeep:    3,
 	}
-}
-
-// Path is the path to the configuration file.
-func Path() string {
-	if x := os.Getenv("XDG_CONFIG_HOME"); x != "" {
-		return filepath.Join(x, "vole", "config.yaml")
-	}
-	return filepath.Join(os.Getenv("HOME"), ".config", "vole", "config.yaml")
 }
 
 // Load reads the config: defaults ← file (if any) ← environment variables.
@@ -107,29 +94,24 @@ func Load() Config {
 	return c
 }
 
-func socketDefault() string {
-	if rt := os.Getenv("XDG_RUNTIME_DIR"); rt != "" {
-		return filepath.Join(rt, "vole.sock")
+func homeDir() string {
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		return home
 	}
-	return "/tmp/vole.sock"
+	if h := os.Getenv("HOME"); h != "" {
+		return h
+	}
+	return os.Getenv("USERPROFILE")
 }
 
-// stateDefault is the default dictation-history path under XDG_STATE_HOME.
-func stateDefault() string {
-	state := os.Getenv("XDG_STATE_HOME")
-	if state == "" {
-		state = filepath.Join(os.Getenv("HOME"), ".local", "state")
-	}
-	return filepath.Join(state, "vole", "history.jsonl")
-}
-
-// expandHome expands a leading ~/ to the home directory.
+// expandHome expands a leading ~/ or ~\ to the home directory.
 func expandHome(p string) string {
+	home := homeDir()
 	if p == "~" {
-		return os.Getenv("HOME")
+		return home
 	}
-	if strings.HasPrefix(p, "~/") {
-		return filepath.Join(os.Getenv("HOME"), p[2:])
+	if strings.HasPrefix(p, "~/") || strings.HasPrefix(p, `~\`) {
+		return filepath.Join(home, p[2:])
 	}
 	return p
 }

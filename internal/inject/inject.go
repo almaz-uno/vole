@@ -1,3 +1,5 @@
+//go:build linux
+
 // Package inject types the transcribed text into the active window via xdotool.
 // It is used on both backends: on X11 directly, and on a Wayland session through
 // Xwayland's XTEST bridge (KWin/Mutter route emulated input to the focused

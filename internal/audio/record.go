@@ -17,6 +17,7 @@ type Recorder struct {
 	peak  float64 // peak instantaneous RMS for the session
 	done  chan struct{}
 	stop  chan struct{} // closed by Stop to end a native capture loop
+	ended bool          // guards stop against a double close
 	cmd   interface{}   // linux: *exec.Cmd for parec; unused elsewhere
 }
 
@@ -27,6 +28,7 @@ func (r *Recorder) reset() {
 	r.peak = 0
 	r.done = make(chan struct{})
 	r.stop = make(chan struct{})
+	r.ended = false
 	r.mu.Unlock()
 }
 
@@ -64,11 +66,21 @@ func (r *Recorder) snapshot() []float32 {
 	return pcm16ToFloat32(r.buf)
 }
 
+// stopChan returns the channel a native capture loop selects on. The field is
+// never cleared, so a loop that reads it after Stop still gets the (closed)
+// channel — reading a nil channel would leave the loop with a select case that
+// is never ready, and the capture would run forever.
+func (r *Recorder) stopChan() <-chan struct{} {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.stop
+}
+
 func (r *Recorder) requestStop() <-chan struct{} {
 	r.mu.Lock()
-	if r.stop != nil {
+	if r.stop != nil && !r.ended {
 		close(r.stop)
-		r.stop = nil
+		r.ended = true
 	}
 	done := r.done
 	r.mu.Unlock()

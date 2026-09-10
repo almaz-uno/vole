@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 	"unsafe"
@@ -155,7 +156,10 @@ type monitorInfo struct {
 // monitor under the cursor. The tray icon is often hidden in the overflow, so
 // this is the visible recording / transcribing indicator on Windows.
 type Overlay struct {
-	hwnd   uintptr
+	// hwnd is written by the UI thread (create, WM_DESTROY, teardown) and read
+	// by every caller goroutine, so it is atomic rather than mu-guarded: the
+	// UI thread already holds mu inside draw/onTimer.
+	hwnd   atomic.Uintptr
 	hdcMem uintptr
 	bmp    uintptr
 	oldBmp uintptr
@@ -231,7 +235,7 @@ func (o *Overlay) thread() {
 		return
 	}
 	o.started <- nil
-	procSetTimer.Call(o.hwnd, timerID, uintptr(framePeriod/time.Millisecond), 0)
+	procSetTimer.Call(o.hwnd.Load(), timerID, uintptr(framePeriod/time.Millisecond), 0)
 
 	var m winMsg
 	for {
@@ -275,14 +279,14 @@ func (o *Overlay) create() error {
 	if hwnd == 0 {
 		return fmt.Errorf("CreateWindowEx: %w", err)
 	}
-	o.hwnd = hwnd
+	o.hwnd.Store(hwnd)
 	overlays.Store(hwnd, o)
 
 	scr, _, err := procGetDC.Call(0)
 	if scr == 0 {
 		procDestroyWindow.Call(hwnd)
 		overlays.Delete(hwnd)
-		o.hwnd = 0
+		o.hwnd.Store(0)
 		return fmt.Errorf("GetDC: %w", err)
 	}
 	mem, _, err := procCreateCompatibleDC.Call(scr)
@@ -290,7 +294,7 @@ func (o *Overlay) create() error {
 	if mem == 0 {
 		procDestroyWindow.Call(hwnd)
 		overlays.Delete(hwnd)
-		o.hwnd = 0
+		o.hwnd.Store(0)
 		return fmt.Errorf("CreateCompatibleDC: %w", err)
 	}
 	o.hdcMem = mem
@@ -330,9 +334,8 @@ func (o *Overlay) ensureDIB(w, h int) error {
 }
 
 func (o *Overlay) teardown() {
-	if o.hwnd != 0 {
-		hwnd := o.hwnd
-		o.hwnd = 0
+	if hwnd := o.hwnd.Load(); hwnd != 0 {
+		o.hwnd.Store(0)
 		procKillTimer.Call(hwnd, timerID)
 		overlays.Delete(hwnd)
 		procDestroyWindow.Call(hwnd)
@@ -368,7 +371,7 @@ func overlayWndProc(hwnd, msg, wParam, lParam uintptr) uintptr {
 		return 0
 	case wmDestroy:
 		overlays.Delete(hwnd)
-		o.hwnd = 0
+		o.hwnd.Store(0)
 		procKillTimer.Call(hwnd, timerID)
 		procPostQuitMessage.Call(0)
 		return 0
@@ -410,12 +413,13 @@ func (o *Overlay) onTimer() {
 }
 
 func (o *Overlay) post(fn func()) {
-	if o.hwnd == 0 {
+	hwnd := o.hwnd.Load()
+	if hwnd == 0 {
 		return
 	}
 	select {
 	case o.cmd <- fn:
-		procPostMessageW.Call(o.hwnd, wmApp, 0, 0)
+		procPostMessageW.Call(hwnd, wmApp, 0, 0)
 	default:
 		// drop if the UI thread is backed up; the next timer tick still redraws
 	}
@@ -489,7 +493,7 @@ func (o *Overlay) Hide() {
 
 func (o *Overlay) Close() {
 	o.closeOnce.Do(func() {
-		hwnd := o.hwnd
+		hwnd := o.hwnd.Load()
 		if hwnd == 0 {
 			return
 		}
@@ -505,7 +509,7 @@ func (o *Overlay) show(w, h int) {
 		return
 	}
 	x, y := o.topCenter(w, h)
-	procSetWindowPos.Call(o.hwnd, hwndTopmost, uintptr(x), uintptr(y), uintptr(w), uintptr(h), swpNoActivate|swpShowWindow)
+	procSetWindowPos.Call(o.hwnd.Load(), hwndTopmost, uintptr(x), uintptr(y), uintptr(w), uintptr(h), swpNoActivate|swpShowWindow)
 	o.mu.Lock()
 	o.mapped = true
 	o.mu.Unlock()
@@ -514,7 +518,7 @@ func (o *Overlay) show(w, h int) {
 
 func (o *Overlay) hide() {
 	// Drop TOPMOST while hidden so the tray context menu can stay open.
-	procSetWindowPos.Call(o.hwnd, hwndNoTopmost, 0, 0, 0, 0, swpNoMove|swpNoSize|swpNoActivate|swpHideWindow)
+	procSetWindowPos.Call(o.hwnd.Load(), hwndNoTopmost, 0, 0, 0, 0, swpNoMove|swpNoSize|swpNoActivate|swpHideWindow)
 }
 
 func (o *Overlay) resizeBuf(w, h int) {
@@ -578,7 +582,7 @@ func (o *Overlay) flush() {
 		return
 	}
 	procUpdateLayeredWindow.Call(
-		o.hwnd,
+		o.hwnd.Load(),
 		scr,
 		0, // keep current position
 		uintptr(unsafe.Pointer(&sz)),

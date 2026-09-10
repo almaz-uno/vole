@@ -108,6 +108,17 @@ func (p *Paster) CopyHistory(string) error { return nil } // no clipboard-histor
 func (p *Paster) Available() bool          { return true }
 func (p *Paster) Close()                   {}
 
+// onOSThread runs fn pinned to a single OS thread. Clipboard ownership and
+// AttachThreadInput are per-thread state: if the goroutine were rescheduled
+// between OpenClipboard and CloseClipboard the clipboard would stay open — and
+// locked for every other process — and an attach/detach pair split across two
+// threads would attach input to a thread that never calls SendInput.
+func onOSThread(fn func() error) error {
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	return fn()
+}
+
 func (p *Paster) put(text string, paste bool) error {
 	if text == "" {
 		return nil
@@ -150,6 +161,10 @@ func (p *Paster) waitOwned(text string) {
 }
 
 func setClipboard(text string) error {
+	return onOSThread(func() error { return setClipboardLocked(text) })
+}
+
+func setClipboardLocked(text string) error {
 	utf16, err := windows.UTF16FromString(text)
 	if err != nil {
 		return err
@@ -183,6 +198,16 @@ func setClipboard(text string) error {
 }
 
 func getClipboard() (string, error) {
+	var out string
+	err := onOSThread(func() error {
+		s, err := getClipboardLocked()
+		out = s
+		return err
+	})
+	return out, err
+}
+
+func getClipboardLocked() (string, error) {
 	if err := openClipboardRetry(); err != nil {
 		return "", err
 	}
@@ -323,6 +348,10 @@ func writeUnicodeInput(buf []byte, off int, unit uint16, flags uint32) {
 }
 
 func withForegroundInput(fn func() error) error {
+	return onOSThread(func() error { return withForegroundInputLocked(fn) })
+}
+
+func withForegroundInputLocked(fn func() error) error {
 	hwnd, _, _ := procGetForegroundWindow.Call()
 	if hwnd == 0 {
 		return fn()

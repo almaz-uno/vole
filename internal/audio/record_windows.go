@@ -111,9 +111,11 @@ func (r *Recorder) captureLoop(started chan<- error) {
 	}
 	defer ac.Stop()
 
+	// Snapshot the stop channel before handing control back: Stop can run the
+	// moment started is received.
+	stop := r.stopChan()
 	started <- nil
 
-	stop := r.stop
 	for {
 		select {
 		case <-stop:
